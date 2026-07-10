@@ -1,0 +1,45 @@
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+
+# MSBuild / WDK output
+build/
+[Dd]ebug/
+[Rr]elease/
+x64/
+obj*/
+*.obj
+*.iobj
+*.ipdb
+*.pdb
+*.ilk
+*.tlog
+*.lastbuildstate
+*.recipe
+*.log
+
+# Driver packages and signing material
+*.sys
+*.cat
+*.cer
+*.pfx
+*.pvk
+*.snk
+
+# Local agent metadata and bundled reference manuals
+.agents/
+.codex/
+Documentation/*.pdf
+static/docs/*.pdf
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*~

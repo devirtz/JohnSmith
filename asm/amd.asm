@@ -1,0 +1,177 @@
+option casemap:none
+
+EXTERN AmdVmExitHandler:PROC
+
+HV_MAGIC_RAX EQU 031504F5453564E45h
+HV_MAGIC_RCX EQU 0C0DEC0DE4E41454Ch
+HV_MAGIC_RDX EQU 053544F504F4E4C59h
+HV_MAGIC_R8  EQU 0A55A5AA5F00DCAFEh
+
+VMCB_RIP_OFFSET EQU 0578h
+VMCB_RSP_OFFSET EQU 05D8h
+
+.code
+
+AmdAsmLaunch PROC
+    ; The fifth argument is the physical address of the host VMCB.
+    mov r10, qword ptr [rsp + 40]
+    mov qword ptr [rcx + VMCB_RSP_OFFSET], rsp
+    lea rax, AmdGuestResume
+    mov qword ptr [rcx + VMCB_RIP_OFFSET], rax
+
+    ; Stable values live above the dedicated host stack pointer.
+    mov qword ptr [r8], r9
+    mov qword ptr [r8 + 8], rcx
+    mov qword ptr [r8 + 16], rdx
+    mov qword ptr [r8 + 24], r10
+
+    mov rax, r10
+    vmsave rax
+    mov rsp, r8
+
+AmdRunGuest:
+    mov rax, qword ptr [rsp + 16]
+    vmload rax
+    mov rax, qword ptr [rsp + 16]
+    vmrun rax
+
+    ; VMRUN restored the automatic host state.  Save the remaining guest
+    ; state and restore the remaining host state before entering C.
+    mov rax, qword ptr [rsp + 16]
+    vmsave rax
+    mov rax, qword ptr [rsp + 24]
+    vmload rax
+
+    push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
+    push rdi
+    push rsi
+    push rbp
+    push rbx
+    push rdx
+    push rcx
+    push rax
+
+    mov rcx, rsp
+    mov rdx, qword ptr [rsp + 120]
+    sub rsp, 40
+    call AmdVmExitHandler
+    add rsp, 40
+    cmp eax, 1
+    je AmdShutdown
+
+    pop rax
+    pop rcx
+    pop rdx
+    pop rbx
+    pop rbp
+    pop rsi
+    pop rdi
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    jmp AmdRunGuest
+
+AmdShutdown:
+    mov rdx, qword ptr [rsp + 120]
+    mov rdx, qword ptr [rdx + 16]
+    mov r10, qword ptr [rdx + 72]
+    mov r11, qword ptr [rdx + 80]
+
+    mov rbx, qword ptr [rsp + 24]
+    mov rbp, qword ptr [rsp + 32]
+    mov rsi, qword ptr [rsp + 40]
+    mov rdi, qword ptr [rsp + 48]
+    mov r12, qword ptr [rsp + 88]
+    mov r13, qword ptr [rsp + 96]
+    mov r14, qword ptr [rsp + 104]
+    mov r15, qword ptr [rsp + 112]
+    mov qword ptr [r10 - 8], r11
+    lea rsp, [r10 - 8]
+    ret
+
+AmdGuestResume:
+    xor eax, eax
+    ret
+AmdAsmLaunch ENDP
+
+AmdAsmStop PROC
+    mov r9, rcx
+    mov rax, HV_MAGIC_RAX
+    mov rcx, HV_MAGIC_RCX
+    mov rdx, HV_MAGIC_RDX
+    mov r8,  HV_MAGIC_R8
+    vmmcall
+    ret
+AmdAsmStop ENDP
+
+AmdAsmReadEs PROC
+    xor eax, eax
+    mov ax, es
+    ret
+AmdAsmReadEs ENDP
+
+AmdAsmReadCs PROC
+    xor eax, eax
+    mov ax, cs
+    ret
+AmdAsmReadCs ENDP
+
+AmdAsmReadSs PROC
+    xor eax, eax
+    mov ax, ss
+    ret
+AmdAsmReadSs ENDP
+
+AmdAsmReadDs PROC
+    xor eax, eax
+    mov ax, ds
+    ret
+AmdAsmReadDs ENDP
+
+AmdAsmReadFs PROC
+    xor eax, eax
+    mov ax, fs
+    ret
+AmdAsmReadFs ENDP
+
+AmdAsmReadGs PROC
+    xor eax, eax
+    mov ax, gs
+    ret
+AmdAsmReadGs ENDP
+
+AmdAsmReadLdtr PROC
+    xor eax, eax
+    sldt ax
+    ret
+AmdAsmReadLdtr ENDP
+
+AmdAsmReadTr PROC
+    xor eax, eax
+    str ax
+    ret
+AmdAsmReadTr ENDP
+
+AmdAsmStoreGdtr PROC
+    sgdt fword ptr [rcx]
+    ret
+AmdAsmStoreGdtr ENDP
+
+AmdAsmStoreIdtr PROC
+    sidt fword ptr [rcx]
+    ret
+AmdAsmStoreIdtr ENDP
+
+END
