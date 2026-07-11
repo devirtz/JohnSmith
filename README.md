@@ -23,8 +23,8 @@ JohnSmith is a versatile, multi-purpose x64 hypervisor designed for red teamer.
   VT-x/EPT or AMD-V/NPT enabled in firmware.
 - Visual Studio 2022 with Desktop C++ and Windows Driver Kit 10.0.26100.
 - Hyper-V, VBS, and other active hypervisors disabled.
-- Kernel-mode hardware-enforced stack protection (CET) disabled; alternate
-  VM-exit shadow-stack state is not implemented.
+- Intel `IA32_S_CET` must be zero, AMD CET
+  must be disabled. ( Root CET/SSP state virtualization is not implemented. )
 
 ## Limits
 

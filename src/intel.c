@@ -1,4 +1,37 @@
 #include "intel/intel_internal.h"
+#include "hv_log.h"
+
+static NTSTATUS
+IntelValidateSupervisorCet(
+    _Out_opt_ PULONG64 SupervisorCet
+    )
+{
+    int registers[4];
+    ULONG64 supervisorCet = 0;
+
+    if (SupervisorCet != NULL) {
+        *SupervisorCet = 0;
+    }
+    if ((__readcr4() & HV_CR4_CET) == 0) {
+        return STATUS_SUCCESS;
+    }
+
+    __cpuid(registers, 0);
+    if ((ULONG)registers[0] < 7) {
+        return STATUS_HV_FEATURE_UNAVAILABLE;
+    }
+    __cpuidex(registers, 7, 0);
+    if ((((ULONG)registers[2] & CPUID_CET_SS) == 0) &&
+        (((ULONG)registers[3] & CPUID_CET_IBT) == 0)) {
+        return STATUS_HV_FEATURE_UNAVAILABLE;
+    }
+
+    supervisorCet = __readmsr(IA32_S_CET);
+    if (SupervisorCet != NULL) {
+        *SupervisorCet = supervisorCet;
+    }
+    return supervisorCet == 0 ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
+}
 
 static VOID
 IntelSetMsrBitmapBit(
@@ -37,6 +70,7 @@ IntelInitializeMsrBitmap(
 
     RtlZeroMemory(Bitmap, PAGE_SIZE);
     IntelSetMsrBitmapBit(Bitmap, IA32_FEATURE_CONTROL, FALSE, TRUE);
+    IntelSetMsrBitmapBit(Bitmap, IA32_S_CET, FALSE, TRUE);
     for (msr = IA32_VMX_BASIC; msr <= 0x491u; ++msr) {
         IntelSetMsrBitmapBit(Bitmap, msr, FALSE, TRUE);
     }
@@ -48,9 +82,27 @@ IntelSupport(
     )
 {
     int registers[4];
+    ULONG64 supervisorCet;
     ULONG64 featureControl;
     ULONG64 basic;
     ULONG64 eptCapabilities;
+    NTSTATUS status;
+
+    status = IntelValidateSupervisorCet(&supervisorCet);
+    if (!NT_SUCCESS(status)) {
+        HV_LOG_ERROR(
+            "Intel supervisor CET is active or inconsistent "
+            "(CR4=0x%016llX, IA32_S_CET=0x%016llX); root CET/SSP "
+            "virtualization is not implemented.\n",
+            __readcr4(),
+            supervisorCet);
+        return status;
+    }
+    if ((__readcr4() & HV_CR4_CET) != 0) {
+        HV_LOG_INFO(
+            "Intel CET facility is enabled with IA32_S_CET=0; "
+            "supervisor CET is inactive, continuing.\n");
+    }
 
     __cpuid(registers, 1);
     if ((((ULONG)registers[2]) & (1u << 5)) == 0) {
@@ -247,6 +299,10 @@ IntelStart(
 
     if (!IntelCurrentCpuMatches(Cpu) || Cpu->VendorContext == NULL) {
         return STATUS_INVALID_DEVICE_STATE;
+    }
+    status = IntelValidateSupervisorCet(NULL);
+    if (!NT_SUCCESS(status)) {
+        return status;
     }
     context = (INTEL_CPU_CONTEXT*)Cpu->VendorContext;
     context->OriginalCr0 = __readcr0();

@@ -10,6 +10,7 @@
 #define IA32_SYSENTER_EIP                   0x00000176u
 #define IA32_DEBUGCTL                       0x000001D9u
 #define IA32_PAT                            0x00000277u
+#define IA32_S_CET                          0x000006A2u
 #define IA32_EFER                           0xC0000080u
 #define IA32_FS_BASE                        0xC0000100u
 #define IA32_GS_BASE                        0xC0000101u
@@ -167,6 +168,8 @@
 #define VMX_ENTRY_LOAD_PAT                  (1u << 14)
 #define VMX_ENTRY_LOAD_EFER                 (1u << 15)
 #define VMX_CR4_VMXE                        (1ull << 13)
+#define CPUID_CET_SS                        (1u << 7)
+#define CPUID_CET_IBT                       (1u << 20)
 
 #define EPT_ACCESS_MASK                     0x7ull
 #define EPT_MEMORY_TYPE_SHIFT               3u

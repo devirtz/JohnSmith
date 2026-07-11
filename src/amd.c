@@ -1,4 +1,5 @@
 #include "amd/amd_internal.h"
+#include "hv_log.h"
 
 static VOID
 AmdSetMsrpmBit(
@@ -69,6 +70,15 @@ AmdSupport(
     int registers[4];
     ULONG64 cacheFlags;
     ULONG64 pat;
+
+    if ((__readcr4() & HV_CR4_CET) != 0) {
+        HV_LOG_ERROR(
+            "AMD CET is enabled (CR4=0x%016llX); SVM CET/SSP state "
+            "virtualization is not implemented.\n",
+            __readcr4());
+        return STATUS_NOT_SUPPORTED;
+    }
+
     __cpuid(registers, 0x80000000);
     if ((ULONG)registers[0] < 0x8000000Au) {
         return STATUS_HV_FEATURE_UNAVAILABLE;
@@ -265,6 +275,9 @@ AmdStart(
 
     if (!AmdCurrentCpuMatches(Cpu) || Cpu->VendorContext == NULL) {
         return STATUS_INVALID_DEVICE_STATE;
+    }
+    if ((__readcr4() & HV_CR4_CET) != 0) {
+        return STATUS_NOT_SUPPORTED;
     }
     if ((__readmsr(AMD_MSR_VM_CR) & AMD_VM_CR_SVMDIS) != 0) {
         return STATUS_HV_FEATURE_UNAVAILABLE;

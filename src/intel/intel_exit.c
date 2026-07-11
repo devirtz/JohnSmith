@@ -380,6 +380,16 @@ IntelVmExitHandler(
     }
 
     if (reason == VMX_EXIT_WRMSR) {
+        ULONG msr = (ULONG)Registers->Rcx;
+
+        if (msr == IA32_S_CET &&
+            (Registers->Rax & MAXULONG) == 0 &&
+            (Registers->Rdx & MAXULONG) == 0) {
+            __writemsr(IA32_S_CET, 0);
+            (VOID)IntelVmWrite(
+                VMCS_GUEST_RIP, guestRip + instructionLength);
+            return INTEL_VMEXIT_RESUME;
+        }
         IntelInjectException(VMX_ENTRY_INJECT_GP, 0);
         return INTEL_VMEXIT_RESUME;
     }

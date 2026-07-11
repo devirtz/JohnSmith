@@ -25,3 +25,7 @@ VMCB clean bits after software changes cached state. Interpret NPF
 `EXITINFO1/EXITINFO2` before guest injection, and flush every active CPU after a
 live NPT permission/mapping change. The project 512 GiB identity map is an
 implementation ceiling.
+
+JohnSmith conservatively rejects `CR4.CET=1` on AMD. CET/SSP VMCB state and a
+root shadow-stack design are not implemented; do not copy an Intel-only CET
+decision into the SVM backend.
