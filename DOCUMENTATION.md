@@ -11,6 +11,15 @@ Primary-source policy for architecture work. Snapshot: **2026-07-11**.
 - A clean build is not hardware proof. Do not claim runtime safety without
   debugger-backed Intel and AMD bare-metal results.
 
+## Code map
+
+- `include/`: stable common, vendor, and assembly-facing contracts.
+- `src/hv.c`: backend selection and synchronized all-CPU lifecycle.
+- `src/intel.c`, `src/amd.c`: capability, resource, start/stop, and ops wiring.
+- `src/intel/`: private VMCS, EPT, and VM-exit modules.
+- `src/amd/`: private VMCB, NPT, and VM-exit modules.
+- `src/introspection.c`, `src/log.c`: owned-page policy and passive-level logs.
+
 ## Sources
 
 | Area | Primary source |
@@ -19,4 +28,3 @@ Primary-source policy for architecture work. Snapshot: **2026-07-11**.
 | AMD SVM/NPT | [AMD APM 24593 rev. 3.44](https://docs.amd.com/v/u/en-US/24593_3.44_APM_Vol2), [instruction volume 24594 rev. 3.37](https://docs.amd.com/v/u/en-US/24594_3.37), and [AMD map](static/docs/amd-svm.md) |
 | Windows kernel | [Driver DDI reference](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/) |
 | Assembly ABI | [Microsoft x64 calling convention](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170) |
-

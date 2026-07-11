@@ -1,0 +1,43 @@
+{
+  "configurations": [
+    {
+      "name": "JohnSmith WDK x64",
+      "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe",
+      "windowsSdkVersion": "10.0.26100.0",
+      "intelliSenseMode": "windows-msvc-x64",
+      "includePath": [
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/src/**",
+        "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/km",
+        "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/shared",
+        "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/ucrt",
+        "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um",
+        "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/include"
+      ],
+      "defines": [
+        "_AMD64_",
+        "AMD64",
+        "_WIN64",
+        "_KERNEL_MODE",
+        "_WIN32_WINNT=0x0A00",
+        "WINVER=0x0A00",
+        "NTDDI_VERSION=NTDDI_WIN10",
+        "DBG=1"
+      ],
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "browse": {
+        "path": [
+          "${workspaceFolder}/include",
+          "${workspaceFolder}/src",
+          "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/km",
+          "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/shared",
+          "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/ucrt",
+          "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/include"
+        ],
+        "limitSymbolsToIncludedHeaders": true
+      }
+    }
+  ],
+  "version": 4
+}

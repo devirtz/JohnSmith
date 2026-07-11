@@ -1,5 +1,6 @@
 #include "hv.h"
 #include "introspection.h"
+#include "hv_log.h"
 
 #include <intrin.h>
 
@@ -328,6 +329,7 @@ HvStart(
     if (!NT_SUCCESS(status)) {
         goto FailLifecycle;
     }
+    HV_LOG_INFO("selected backend: %s.\n", backend->Name);
 
     cpu_count = KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
     if (cpu_count == 0 || cpu_count > MAXULONG / sizeof(HV_CPU)) {
@@ -387,6 +389,7 @@ HvStart(
 
     InterlockedExchange(&HvGlobalState.Lifecycle, HV_LIFECYCLE_RUNNING);
     *State = &HvGlobalState;
+    HvLogStartBanner(backend->Name, cpu_count);
     return STATUS_SUCCESS;
 
 FailIntrospection:
@@ -402,6 +405,7 @@ FailArray:
     ExFreePoolWithTag(HvGlobalState.Cpus, HV_POOL_TAG_CPU_ARRAY);
 FailLifecycle:
     HvResetStoppedState(&HvGlobalState);
+    HV_LOG_ERROR("startup failed with NTSTATUS 0x%08X.\n", (ULONG)status);
     return status;
 }
 
@@ -430,6 +434,11 @@ HvStop(
         HvFailStop(State, HV_FAIL_STOP_SHUTDOWN);
     }
 
+    HV_LOG_INFO(
+        "stopping backend %s on %lu logical processors.\n",
+        State->Backend->Name,
+        State->CpuCount);
+
     HvStopProcessorsOrFail(State, HV_FAIL_STOP_SHUTDOWN);
 
     if (State->IntrospectionActive) {
@@ -445,4 +454,5 @@ HvStop(
     State->Backend->Free(State);
     ExFreePoolWithTag(State->Cpus, HV_POOL_TAG_CPU_ARRAY);
     HvResetStoppedState(State);
+    HV_LOG_INFO("hypervisor stopped cleanly.\n");
 }

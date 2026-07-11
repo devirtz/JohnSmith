@@ -2,9 +2,9 @@
 
 > **The Swiss Army Knife of Hypervisors**
 
-![alt text](./static/img/main.png)
+![banner](./static/img/main.png)
 
-JohnSmith is a versatile, multi-purpose x64 Type-2 and Type-1 hypervisor designed for red teamer.
+JohnSmith is a versatile, multi-purpose x64 hypervisor designed for red teamer.
 
 ## Features
 
@@ -24,14 +24,6 @@ JohnSmith is a versatile, multi-purpose x64 Type-2 and Type-1 hypervisor designe
 - Visual Studio 2022 with Desktop C++ and Windows Driver Kit 10.0.26100.
 - Hyper-V, VBS, and other active hypervisors disabled.
 
-## Layout
-
-```text
-include/   Common and vendor contracts
-src/       Driver, lifecycle, backends, introspection
-asm/       VMX/SVM entry, exit, and shutdown stubs
-static/docs/ Architecture and WDK source maps
-```
 
 ## Documentation
 

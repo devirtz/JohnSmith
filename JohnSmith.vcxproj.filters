@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{09D31070-F784-47A6-A1F8-91BF112D7A34}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Public">
+      <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Private">
+      <UniqueIdentifier>{237036DC-C2E9-4FF1-984A-C0C3F7C047D1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{AB6D16AE-9987-480A-8BC8-1067C8C035AA}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Core">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Intel">
+      <UniqueIdentifier>{5D5AA125-9CC0-4A92-840D-E6A06F8B7825}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\AMD">
+      <UniqueIdentifier>{73D287FB-0CEB-4F85-A772-C1944C037AF3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Assembly Files">
+      <UniqueIdentifier>{D8BCEBB8-1A65-4C10-8D9B-53B85A1E258E}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\hv.h"><Filter>Header Files\Public</Filter></ClInclude>
+    <ClInclude Include="include\hv_log.h"><Filter>Header Files\Public</Filter></ClInclude>
+    <ClInclude Include="include\intel.h"><Filter>Header Files\Public</Filter></ClInclude>
+    <ClInclude Include="include\amd.h"><Filter>Header Files\Public</Filter></ClInclude>
+    <ClInclude Include="include\introspection.h"><Filter>Header Files\Public</Filter></ClInclude>
+    <ClInclude Include="src\intel\intel_internal.h"><Filter>Header Files\Private</Filter></ClInclude>
+    <ClInclude Include="src\amd\amd_internal.h"><Filter>Header Files\Private</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\driver.c"><Filter>Source Files\Core</Filter></ClCompile>
+    <ClCompile Include="src\hv.c"><Filter>Source Files\Core</Filter></ClCompile>
+    <ClCompile Include="src\log.c"><Filter>Source Files\Core</Filter></ClCompile>
+    <ClCompile Include="src\introspection.c"><Filter>Source Files\Core</Filter></ClCompile>
+    <ClCompile Include="src\intel.c"><Filter>Source Files\Intel</Filter></ClCompile>
+    <ClCompile Include="src\intel\intel_exit.c"><Filter>Source Files\Intel</Filter></ClCompile>
+    <ClCompile Include="src\intel\intel_slat.c"><Filter>Source Files\Intel</Filter></ClCompile>
+    <ClCompile Include="src\intel\intel_vmcs.c"><Filter>Source Files\Intel</Filter></ClCompile>
+    <ClCompile Include="src\amd.c"><Filter>Source Files\AMD</Filter></ClCompile>
+    <ClCompile Include="src\amd\amd_exit.c"><Filter>Source Files\AMD</Filter></ClCompile>
+    <ClCompile Include="src\amd\amd_slat.c"><Filter>Source Files\AMD</Filter></ClCompile>
+    <ClCompile Include="src\amd\amd_vmcb.c"><Filter>Source Files\AMD</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <MASM Include="asm\intel.asm"><Filter>Assembly Files</Filter></MASM>
+    <MASM Include="asm\amd.asm"><Filter>Assembly Files</Filter></MASM>
+  </ItemGroup>
+</Project>

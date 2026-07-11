@@ -93,14 +93,24 @@
   <ItemGroup>
     <ClCompile Include="src\driver.c" />
     <ClCompile Include="src\hv.c" />
+    <ClCompile Include="src\log.c" />
     <ClCompile Include="src\intel.c" />
+    <ClCompile Include="src\intel\intel_exit.c" />
+    <ClCompile Include="src\intel\intel_slat.c" />
+    <ClCompile Include="src\intel\intel_vmcs.c" />
     <ClCompile Include="src\amd.c" />
+    <ClCompile Include="src\amd\amd_exit.c" />
+    <ClCompile Include="src\amd\amd_slat.c" />
+    <ClCompile Include="src\amd\amd_vmcb.c" />
     <ClCompile Include="src\introspection.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\hv.h" />
+    <ClInclude Include="include\hv_log.h" />
     <ClInclude Include="include\intel.h" />
+    <ClInclude Include="src\intel\intel_internal.h" />
     <ClInclude Include="include\amd.h" />
+    <ClInclude Include="src\amd\amd_internal.h" />
     <ClInclude Include="include\introspection.h" />
   </ItemGroup>
   <ItemGroup>
