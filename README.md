@@ -43,6 +43,26 @@ build, architecture, and hardware verification.
 
 This is educational kernel-mode code, not a production security boundary. Test only in a disposable, kernel-debugger-enabled environment. A defect in VM-entry, VM-exit, or teardown code can crash or corrupt the host.
 
+## Loading (with KDU)
+
+JohnSmith is an unsigned WDM driver. For testing on a box with Secure Boot /
+VBS / HVCI off, you can load it as a **normal SCM service** with
+[KDU](https://github.com/hfiref0x/KDU) temporarily overriding Driver Signature
+Enforcement. 
+
+```pwsh
+git clone https://github.com/hfiref0x/KDU.git external/KDU
+
+# build JohnSmith.sys (Release or Debug)
+d                 # DSE off > service load > DSE restored
+.\tools\unload-kdu.ps1               # stop + remove the service
+```
+
+`load-kdu.ps1` runs `kdu.exe -dse 0`, creates and starts the `JohnSmith`
+service via `sc.exe`, then restores DSE to `6` in a `try/finally` so DSE is
+always restored even on failure. See `tools/check.ps1` to confirm the box is in
+a KDU-compatible state first.
+
 ## License
 
 [MIT](LICENSE)
