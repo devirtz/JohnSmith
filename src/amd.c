@@ -42,12 +42,33 @@ AmdInitializeMsrpm(
     AmdSetMsrpmBit(Msrpm, AMD_MSR_VM_HSAVE_PA, TRUE, TRUE);
 }
 
+static BOOLEAN
+AmdFindPatCacheFlags(
+    _In_ ULONG64 Pat,
+    _In_ UCHAR MemoryType,
+    _Out_ ULONG64* CacheFlags
+    )
+{
+    ULONG index;
+
+    for (index = 0; index < 4; ++index) {
+        if (((Pat >> (index * 8)) & 0xff) == MemoryType) {
+            *CacheFlags = ((index & 1) != 0 ? NPT_PWT : 0) |
+                          ((index & 2) != 0 ? NPT_PCD : 0);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 static NTSTATUS
 AmdSupport(
     VOID
     )
 {
     int registers[4];
+    ULONG64 cacheFlags;
+    ULONG64 pat;
     __cpuid(registers, 0x80000000);
     if ((ULONG)registers[0] < 0x8000000Au) {
         return STATUS_HV_FEATURE_UNAVAILABLE;
@@ -58,10 +79,15 @@ AmdSupport(
         return STATUS_HV_FEATURE_UNAVAILABLE;
     }
     __cpuid(registers, 0x8000000A);
-    if ((ULONG)registers[0] == 0 || (ULONG)registers[1] == 0 ||
+    if ((ULONG)registers[0] == 0 || (ULONG)registers[1] < 2 ||
         (((ULONG)registers[3]) &
          (AMD_SVM_FEATURE_NPT | AMD_SVM_FEATURE_NRIPS)) !=
         (AMD_SVM_FEATURE_NPT | AMD_SVM_FEATURE_NRIPS)) {
+        return STATUS_HV_FEATURE_UNAVAILABLE;
+    }
+    pat = __readmsr(AMD_MSR_PAT);
+    if (!AmdFindPatCacheFlags(pat, 6, &cacheFlags) ||
+        !AmdFindPatCacheFlags(pat, 0, &cacheFlags)) {
         return STATUS_HV_FEATURE_UNAVAILABLE;
     }
     return STATUS_SUCCESS;
@@ -81,8 +107,18 @@ AmdPrepare(
     if (context == NULL) return STATUS_INSUFFICIENT_RESOURCES;
     RtlZeroMemory(context, sizeof(*context));
     InitializeListHead(&context->SplitList);
+    if (!AmdFindPatCacheFlags(
+            __readmsr(AMD_MSR_PAT), 6, &context->RamCacheFlags) ||
+        !AmdFindPatCacheFlags(
+            __readmsr(AMD_MSR_PAT), 0, &context->MmioCacheFlags)) {
+        ExFreePoolWithTag(context, HV_POOL_TAG_BACKEND);
+        return STATUS_HV_FEATURE_UNAVAILABLE;
+    }
     __cpuid(registers, 0x8000000A);
     context->MaxAsid = (ULONG)registers[1];
+    context->TlbFlushCommand =
+        (((ULONG)registers[3] & AMD_SVM_FEATURE_FLUSH_BY_ASID) != 0)
+        ? 3 : 1;
     context->SlatGeneration = 1;
     State->BackendContext = context;
     status = AmdBuildNpt(context);
@@ -230,6 +266,9 @@ AmdStart(
     if (!AmdCurrentCpuMatches(Cpu) || Cpu->VendorContext == NULL) {
         return STATUS_INVALID_DEVICE_STATE;
     }
+    if ((__readmsr(AMD_MSR_VM_CR) & AMD_VM_CR_SVMDIS) != 0) {
+        return STATUS_HV_FEATURE_UNAVAILABLE;
+    }
     context = (AMD_CPU_CONTEXT*)Cpu->VendorContext;
     context->OriginalEfer = __readmsr(AMD_MSR_EFER);
     context->OriginalHostSavePhysical = __readmsr(AMD_MSR_VM_HSAVE_PA);
@@ -278,7 +317,13 @@ AmdStop(
     context = (AMD_CPU_CONTEXT*)Cpu->VendorContext;
     if (!context->Virtualized) return STATUS_SUCCESS;
     AmdAsmStop(context->StopCookie);
-    return context->Virtualized ? STATUS_HV_OPERATION_FAILED : STATUS_SUCCESS;
+    if (context->Virtualized) {
+        return STATUS_HV_OPERATION_FAILED;
+    }
+    __writemsr(AMD_MSR_PAT, context->Vmcb->State.GPat);
+    __writemsr(AMD_MSR_VM_HSAVE_PA, context->OriginalHostSavePhysical);
+    __writemsr(AMD_MSR_EFER, context->GuestEfer);
+    return STATUS_SUCCESS;
 }
 
 static const HV_BACKEND_OPS AmdBackendOps = {

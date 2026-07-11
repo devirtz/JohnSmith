@@ -307,6 +307,11 @@ HvStart(
         return STATUS_INVALID_DEVICE_STATE;
     }
 
+    /* Alternate VM-exit stacks require explicit CET/SSP virtualization. */
+    if ((__readcr4() & HV_CR4_CET) != 0) {
+        return STATUS_NOT_SUPPORTED;
+    }
+
     if (InterlockedCompareExchange(
             &HvGlobalState.Lifecycle,
             HV_LIFECYCLE_STARTING,

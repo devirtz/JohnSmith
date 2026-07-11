@@ -51,6 +51,17 @@ typedef struct _INTEL_CPU_CONTEXT {
     ULONG64 StopCookie;
     ULONG LastVmxError;
     USHORT Vpid;
+    ULONG64 ResumeCr0;
+    ULONG64 ResumeCr3;
+    ULONG64 ResumeCr4;
+    ULONG64 ResumeDr7;
+    ULONG64 ResumeFsBase;
+    ULONG64 ResumeGsBase;
+    ULONG64 ResumePat;
+    ULONG64 ResumeEfer;
+    ULONG64 ResumeSysenterCs;
+    ULONG64 ResumeSysenterEsp;
+    ULONG64 ResumeSysenterEip;
 } INTEL_CPU_CONTEXT;
 
 C_ASSERT(FIELD_OFFSET(HV_CPU, VendorContext) == 16);

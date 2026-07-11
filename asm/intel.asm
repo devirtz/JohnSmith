@@ -79,11 +79,29 @@ IntelAsmVmExit PROC
     push rcx
     push rax
 
-    mov rcx, rsp
-    mov rdx, qword ptr [rsp + 120]
+    ; The Windows x64 ABI lets C clobber XMM0-XMM5, but VM exits must be
+    ; transparent to the interrupted guest context.
+    sub rsp, 96
+    movdqu xmmword ptr [rsp + 0], xmm0
+    movdqu xmmword ptr [rsp + 16], xmm1
+    movdqu xmmword ptr [rsp + 32], xmm2
+    movdqu xmmword ptr [rsp + 48], xmm3
+    movdqu xmmword ptr [rsp + 64], xmm4
+    movdqu xmmword ptr [rsp + 80], xmm5
+
+    lea rcx, [rsp + 96]
+    mov rdx, qword ptr [rsp + 216]
     sub rsp, 40
     call IntelVmExitHandler
     add rsp, 40
+
+    movdqu xmm0, xmmword ptr [rsp + 0]
+    movdqu xmm1, xmmword ptr [rsp + 16]
+    movdqu xmm2, xmmword ptr [rsp + 32]
+    movdqu xmm3, xmmword ptr [rsp + 48]
+    movdqu xmm4, xmmword ptr [rsp + 64]
+    movdqu xmm5, xmmword ptr [rsp + 80]
+    add rsp, 96
     cmp eax, 1
     je IntelShutdown
 

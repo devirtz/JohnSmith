@@ -60,6 +60,7 @@ AmdSetupVmcb(
     AMD_VMCB* vmcb = context->Vmcb;
     AMD_DESCRIPTOR_TABLE_REGISTER gdtr;
     AMD_DESCRIPTOR_TABLE_REGISTER idtr;
+    int cpuid[4];
     NTSTATUS status;
 
     RtlZeroMemory(vmcb, PAGE_SIZE);
@@ -110,8 +111,13 @@ AmdSetupVmcb(
     vmcb->State.Rax = 0;
 
     vmcb->Control.InterceptMisc1 =
-        AMD_INTERCEPT_CPUID | AMD_INTERCEPT_IOIO | AMD_INTERCEPT_MSR;
+        AMD_INTERCEPT_CPUID | AMD_INTERCEPT_INVLPGA |
+        AMD_INTERCEPT_IOIO | AMD_INTERCEPT_MSR;
     vmcb->Control.InterceptMisc2 = AMD_INTERCEPT_SVM_INSTRUCTIONS;
+    __cpuid(cpuid, 1);
+    if ((((ULONG)cpuid[2]) & (1u << 26)) != 0) {
+        vmcb->Control.InterceptMisc2 |= AMD_INTERCEPT_XSETBV;
+    }
     context->GuestAsid = Cpu->ProcessorIndex + 1;
     if (context->GuestAsid == 0 ||
         context->GuestAsid >= backend->MaxAsid) {
@@ -121,7 +127,6 @@ AmdSetupVmcb(
     vmcb->Control.TlbControl = 1;
     vmcb->Control.IopmBase = backend->IopmPhysical.QuadPart;
     vmcb->Control.MsrpmBase = context->MsrpmPhysical.QuadPart;
-    vmcb->Control.VirtualInterrupt = 1ull << 24;
     vmcb->Control.NestedPagingEnable = 1;
     vmcb->Control.NestedCr3 =
         (ULONG64)MmGetPhysicalAddress(backend->Pml4).QuadPart &
@@ -129,4 +134,3 @@ AmdSetupVmcb(
     vmcb->Control.VmcbClean = 0;
     return STATUS_SUCCESS;
 }
-

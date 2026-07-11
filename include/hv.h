@@ -15,6 +15,7 @@ typedef struct _HV_BACKEND_OPS HV_BACKEND_OPS;
 #define HV_HYPERCALL_MAGIC_RCX      0xC0DEC0DE4E41454Cull
 #define HV_HYPERCALL_MAGIC_RDX      0x53544F504F4E4C59ull
 #define HV_HYPERCALL_MAGIC_R8       0xA55A5AA5F00DCAFEull
+#define HV_CR4_CET                  (1ull << 23)
 
 typedef enum _HV_PAGE_ACCESS {
     HV_PAGE_ACCESS_NONE = 0,

@@ -1,5 +1,7 @@
 #include "intel_internal.h"
 
+#define VMX_EVENT_INFORMATION_MASK 0x80000FFFu
+
 NTSTATUS
 IntelSetLaunchState(
     _In_ ULONG64 GuestRsp,
@@ -34,6 +36,7 @@ IntelInjectException(
     _In_ ULONG ErrorCode
     )
 {
+    Information &= VMX_EVENT_INFORMATION_MASK;
     (VOID)IntelVmWrite(VMCS_ENTRY_INTERRUPTION_INFO, Information);
     if ((Information & (1u << 11)) != 0) {
         (VOID)IntelVmWrite(VMCS_ENTRY_EXCEPTION_ERROR, ErrorCode);
@@ -62,7 +65,7 @@ IntelPreserveVectoringEvent(
         return;
     }
     type = (ULONG)((information >> 8) & 7);
-    if (type == 0) return;
+    information &= VMX_EVENT_INFORMATION_MASK;
     (VOID)IntelVmWrite(VMCS_ENTRY_INTERRUPTION_INFO, information);
     if ((information & (1ull << 11)) != 0) {
         ULONG64 errorCode;
@@ -220,13 +223,20 @@ IntelHandleXsetbv(
     ULONG64 supported;
     ULONG64 requested;
     ULONG64 avx512;
+    ULONG64 csSelector;
+    ULONG64 guestCr4;
 
-    if ((ULONG)Registers->Rcx != 0) return FALSE;
+    if ((ULONG)Registers->Rcx != 0 ||
+        !IntelVmReadValue(VMCS_GUEST_CS_SELECTOR, &csSelector) ||
+        !IntelVmReadValue(VMCS_GUEST_CR4, &guestCr4) ||
+        (csSelector & 3) != 0 || (guestCr4 & (1ull << 18)) == 0) {
+        return FALSE;
+    }
     __cpuidex(cpuid, 0xD, 0);
     supported = ((ULONG64)(ULONG)cpuid[3] << 32) | (ULONG)cpuid[0];
     requested = ((ULONG64)(ULONG)Registers->Rdx << 32) |
                 (ULONG)Registers->Rax;
-    if ((requested & ~supported) != 0 || (requested & 1) == 0) return FALSE;
+    if ((requested & ~supported) != 0 || (requested & 3) != 3) return FALSE;
     if ((requested & (1ull << 2)) != 0 &&
         (requested & (1ull << 1)) == 0) return FALSE;
     if (((requested >> 3) & 3) == 1 || ((requested >> 3) & 3) == 2) {
@@ -250,6 +260,27 @@ IntelIsVmxInstructionExit(
 {
     return (Reason >= 19 && Reason <= 27) ||
            Reason == 50 || Reason == 53 || Reason == 59;
+}
+
+static BOOLEAN
+IntelCaptureStopState(
+    _Out_ INTEL_CPU_CONTEXT* Context
+    )
+{
+    return IntelVmReadValue(VMCS_CR0_READ_SHADOW, &Context->ResumeCr0) &&
+           IntelVmReadValue(VMCS_GUEST_CR3, &Context->ResumeCr3) &&
+           IntelVmReadValue(VMCS_CR4_READ_SHADOW, &Context->ResumeCr4) &&
+           IntelVmReadValue(VMCS_GUEST_DR7, &Context->ResumeDr7) &&
+           IntelVmReadValue(VMCS_GUEST_FS_BASE, &Context->ResumeFsBase) &&
+           IntelVmReadValue(VMCS_GUEST_GS_BASE, &Context->ResumeGsBase) &&
+           IntelVmReadValue(VMCS_GUEST_PAT, &Context->ResumePat) &&
+           IntelVmReadValue(VMCS_GUEST_EFER, &Context->ResumeEfer) &&
+           IntelVmReadValue(
+               VMCS_GUEST_SYSENTER_CS, &Context->ResumeSysenterCs) &&
+           IntelVmReadValue(
+               VMCS_GUEST_SYSENTER_ESP, &Context->ResumeSysenterEsp) &&
+           IntelVmReadValue(
+               VMCS_GUEST_SYSENTER_EIP, &Context->ResumeSysenterEip);
 }
 
 ULONG
@@ -311,7 +342,7 @@ IntelVmExitHandler(
             (VOID)IntelVmReadValue(
                 VMCS_EXIT_INTERRUPTION_ERROR, &errorCode);
         }
-        information &= ~(1ull << 12);
+        information &= VMX_EVENT_INFORMATION_MASK;
         IntelInjectException((ULONG)information, (ULONG)errorCode);
         return INTEL_VMEXIT_RESUME;
     }
@@ -356,7 +387,7 @@ IntelVmExitHandler(
     if (reason == VMX_EXIT_EPT_VIOLATION) {
         ULONG64 qualification;
         ULONG64 linearAddress;
-        ULONG errorCode = 1;
+        ULONG errorCode = 0;
         ULONG64 csSelector;
 
         if (!IntelVmReadValue(VMCS_EXIT_QUALIFICATION, &qualification)) {
@@ -367,6 +398,10 @@ IntelVmExitHandler(
             !IntelVmReadValue(VMCS_GUEST_LINEAR_ADDRESS, &linearAddress)) {
             IntelInjectException(VMX_ENTRY_INJECT_GP, 0);
             return INTEL_VMEXIT_RESUME;
+        }
+        if ((qualification & ((1ull << 3) | (1ull << 4) |
+                              (1ull << 5))) != 0) {
+            errorCode |= 1;
         }
         if ((qualification & (1ull << 1)) != 0) errorCode |= 2;
         if (IntelVmReadValue(VMCS_GUEST_CS_SELECTOR, &csSelector) &&
@@ -407,6 +442,10 @@ IntelVmExitHandler(
             Registers->Rdx == HV_HYPERCALL_MAGIC_RDX &&
             Registers->R8 == HV_HYPERCALL_MAGIC_R8 &&
             Registers->R9 == context->StopCookie) {
+            if (!IntelCaptureStopState(context)) {
+                KeBugCheckEx(HYPERVISOR_ERROR,
+                    INTEL_BUGCHECK_UNEXPECTED_EXIT, reason, 7, guestRip);
+            }
             if (__vmx_vmread(VMCS_GUEST_RSP, &value) != 0) {
                 KeBugCheckEx(HYPERVISOR_ERROR,
                     INTEL_BUGCHECK_UNEXPECTED_EXIT, reason, 4, 0);
@@ -440,4 +479,3 @@ IntelVmExitHandler(
     KeBugCheckEx(HYPERVISOR_ERROR, INTEL_BUGCHECK_UNEXPECTED_EXIT,
         Cpu->ProcessorIndex, reason, guestRip);
 }
-

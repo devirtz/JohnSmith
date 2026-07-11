@@ -15,10 +15,11 @@ mainly Volume 3C.
 | EPT/VPID | Section 31.3 and `IA32_VMX_EPT_VPID_CAP` |
 | INVEPT/INVVPID/VMCALL | VMX instruction reference |
 
-Code: `include/intel.h`, `src/intel.c`, `asm/intel.asm`.
+Code: `include/intel.h`, `src/intel.c`, `src/intel/`, `asm/intel.asm`.
 
 Always derive revision ID, allowed controls, CR masks, EPT capabilities,
 physical width, and invalidation types at runtime. Treat EPT violation and EPT
 misconfiguration separately. After a live EPT permission/mapping change,
 invalidate every active CPU before resuming it. The project 512 GiB identity map
-is an implementation ceiling.
+is an implementation ceiling. VMCS has an XSS-exiting bitmap, but no
+guest-XSS or host-XSS state fields; do not invent such encodings.

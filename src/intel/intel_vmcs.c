@@ -110,6 +110,8 @@ IntelSetupVmcs(
     ULONG desiredSecondary;
     ULONG requiredSecondary;
     ULONG desiredPrimary;
+    ULONG requiredExit;
+    ULONG requiredEntry;
     ULONG64 hostRsp;
     ULONG64 eptp;
     int cpuid[4];
@@ -183,12 +185,13 @@ IntelSetupVmcs(
         desiredPrimary, primaryMsr);
     secondaryControls = IntelAdjustControls(
         desiredSecondary, IA32_VMX_PROCBASED_CTLS2);
-    exitControls = IntelAdjustControls(
-        VMX_EXIT_HOST_ADDRESS_SPACE_SIZE |
-        (1u << 18) | (1u << 19) | (1u << 20) | (1u << 21),
-        exitMsr);
-    entryControls = IntelAdjustControls(
-        VMX_ENTRY_IA32E_MODE | (1u << 14) | (1u << 15), entryMsr);
+    requiredExit = VMX_EXIT_HOST_ADDRESS_SPACE_SIZE |
+                   VMX_EXIT_SAVE_PAT | VMX_EXIT_LOAD_PAT |
+                   VMX_EXIT_SAVE_EFER | VMX_EXIT_LOAD_EFER;
+    requiredEntry = VMX_ENTRY_IA32E_MODE |
+                    VMX_ENTRY_LOAD_PAT | VMX_ENTRY_LOAD_EFER;
+    exitControls = IntelAdjustControls(requiredExit, exitMsr);
+    entryControls = IntelAdjustControls(requiredEntry, entryMsr);
     if (pinControls != 0 ||
         (primaryControls & ~desiredPrimary) != 0 ||
         (secondaryControls & ~desiredSecondary) != 0 ||
@@ -197,8 +200,8 @@ IntelSetupVmcs(
                             VMX_PRIMARY_USE_MSR_BITMAPS)) !=
             (VMX_PRIMARY_USE_IO_BITMAPS | VMX_PRIMARY_USE_MSR_BITMAPS) ||
         (secondaryControls & requiredSecondary) != requiredSecondary ||
-        (exitControls & VMX_EXIT_HOST_ADDRESS_SPACE_SIZE) == 0 ||
-        (entryControls & VMX_ENTRY_IA32E_MODE) == 0) {
+        (exitControls & requiredExit) != requiredExit ||
+        (entryControls & requiredEntry) != requiredEntry) {
         return STATUS_HV_FEATURE_UNAVAILABLE;
     }
 
@@ -320,4 +323,3 @@ IntelSetupVmcs(
     VMX_WRITE(VMCS_HOST_RIP, (ULONG64)IntelAsmVmExit);
     return STATUS_SUCCESS;
 }
-

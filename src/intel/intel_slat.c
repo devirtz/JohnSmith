@@ -132,6 +132,81 @@ IntelRangeIsRam(
     return FALSE;
 }
 
+static BOOLEAN
+IntelRangeIntersectsRam(
+    _In_ PPHYSICAL_MEMORY_RANGE Ranges,
+    _In_ ULONG64 Base,
+    _In_ ULONG64 Size
+    )
+{
+    ULONG index;
+    ULONG64 end;
+
+    if (Ranges == NULL || Size == 0 || Base > MAXULONGLONG - Size) {
+        return FALSE;
+    }
+    end = Base + Size;
+
+    for (index = 0; Ranges[index].NumberOfBytes.QuadPart != 0; ++index) {
+        ULONG64 rangeBase = (ULONG64)Ranges[index].BaseAddress.QuadPart;
+        ULONG64 rangeSize = (ULONG64)Ranges[index].NumberOfBytes.QuadPart;
+        ULONG64 rangeEnd = rangeBase > MAXULONGLONG - rangeSize
+            ? MAXULONGLONG : rangeBase + rangeSize;
+
+        if (Base < rangeEnd && rangeBase < end) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+static NTSTATUS
+IntelCreateMixedMapping(
+    _Inout_ INTEL_BACKEND_CONTEXT* Context,
+    _In_ PPHYSICAL_MEMORY_RANGE Ranges,
+    _In_ ULONG PdptIndex,
+    _In_ ULONG PdIndex,
+    _In_ ULONG64 PhysicalAddress,
+    _Out_ ULONG64* Entry
+    )
+{
+    INTEL_SLAT_SPLIT* split;
+    ULONG64* pt;
+    ULONG index;
+
+    split = (INTEL_SLAT_SPLIT*)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED, sizeof(*split), HV_POOL_TAG_SLAT_SPLIT);
+    if (split == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(split, sizeof(*split));
+    split->Pt = IntelAllocatePage(MAXLONGLONG);
+    if (split->Pt == NULL) {
+        ExFreePoolWithTag(split, HV_POOL_TAG_SLAT_SPLIT);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    pt = (ULONG64*)split->Pt;
+    for (index = 0; index < 512; ++index) {
+        ULONG64 pageAddress = PhysicalAddress +
+                              ((ULONG64)index << PAGE_SHIFT);
+        ULONG64 memoryType = IntelRangeIsRam(
+            Ranges, pageAddress, PAGE_SIZE) ? EPT_MEMORY_TYPE_WB : 0;
+
+        pt[index] = (pageAddress & EPT_ADDRESS_MASK) |
+                    EPT_ACCESS_MASK |
+                    (memoryType << EPT_MEMORY_TYPE_SHIFT);
+    }
+
+    split->PdptIndex = PdptIndex;
+    split->PdIndex = PdIndex;
+    InsertTailList(&Context->SplitList, &split->Link);
+    *Entry = ((ULONG64)MmGetPhysicalAddress(pt).QuadPart &
+              EPT_ADDRESS_MASK) | EPT_ACCESS_MASK;
+    return STATUS_SUCCESS;
+}
+
 static ULONG64
 IntelPhysicalLimit(
     VOID
@@ -185,7 +260,10 @@ IntelBuildEpt(
     pml4[0] = ((ULONG64)MmGetPhysicalAddress(Context->Pdpt).QuadPart &
                EPT_ADDRESS_MASK) | EPT_ACCESS_MASK;
 
-    ranges = MmGetPhysicalMemoryRanges();
+    ranges = MmGetPhysicalMemoryRangesEx2(NULL, 0);
+    if (ranges == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
     pdptCount = (ULONG)((Context->MapLimit + ((1ull << 30) - 1)) >> 30);
     for (pdptIndex = 0; pdptIndex < pdptCount; ++pdptIndex) {
         ULONG64* pd;
@@ -206,24 +284,35 @@ IntelBuildEpt(
         for (pdIndex = 0; pdIndex < 512; ++pdIndex) {
             ULONG64 physical = ((ULONG64)pdptIndex << 30) |
                                ((ULONG64)pdIndex << 21);
-            ULONG64 memoryType;
+            NTSTATUS status;
 
             if (physical >= Context->MapLimit) {
                 break;
             }
-            memoryType = IntelRangeIsRam(ranges, physical, 1ull << 21)
-                ? EPT_MEMORY_TYPE_WB
-                : 0;
-            pd[pdIndex] = (physical & EPT_2MB_ADDRESS_MASK) |
-                          EPT_ACCESS_MASK |
-                          EPT_LARGE_PAGE |
-                          (memoryType << EPT_MEMORY_TYPE_SHIFT);
+            if (IntelRangeIsRam(ranges, physical, 1ull << 21)) {
+                pd[pdIndex] = (physical & EPT_2MB_ADDRESS_MASK) |
+                              EPT_ACCESS_MASK |
+                              EPT_LARGE_PAGE |
+                              (EPT_MEMORY_TYPE_WB <<
+                               EPT_MEMORY_TYPE_SHIFT);
+            } else if (IntelRangeIntersectsRam(
+                           ranges, physical, 1ull << 21)) {
+                status = IntelCreateMixedMapping(
+                    Context, ranges, pdptIndex, pdIndex,
+                    physical, &pd[pdIndex]);
+                if (!NT_SUCCESS(status)) {
+                    ExFreePool(ranges);
+                    return status;
+                }
+            } else {
+                pd[pdIndex] = (physical & EPT_2MB_ADDRESS_MASK) |
+                              EPT_ACCESS_MASK |
+                              EPT_LARGE_PAGE;
+            }
         }
     }
 
-    if (ranges != NULL) {
-        ExFreePool(ranges);
-    }
+    ExFreePool(ranges);
     return STATUS_SUCCESS;
 }
 
@@ -382,6 +471,15 @@ IntelSetOwnedPageAccess(
     }
 
     context = (INTEL_BACKEND_CONTEXT*)State->BackendContext;
+    if ((((ULONG)Access) & HV_PAGE_ACCESS_WRITE) != 0 &&
+        (((ULONG)Access) & HV_PAGE_ACCESS_READ) == 0) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    if ((((ULONG)Access) & HV_PAGE_ACCESS_EXECUTE) != 0 &&
+        (((ULONG)Access) & HV_PAGE_ACCESS_READ) == 0 &&
+        (context->EptVpidCapabilities & 1) == 0) {
+        return STATUS_NOT_SUPPORTED;
+    }
     status = IntelValidateOwnedAddress(
         context, PhysicalAddress, &pdptIndex, &pdIndex, &ptIndex);
     if (!NT_SUCCESS(status)) {
@@ -447,4 +545,3 @@ Exit:
     }
     return status;
 }
-

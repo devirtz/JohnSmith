@@ -159,7 +159,13 @@
 #define VMX_SECONDARY_ENABLE_INVPCID        (1u << 12)
 #define VMX_SECONDARY_ENABLE_XSAVES         (1u << 20)
 #define VMX_EXIT_HOST_ADDRESS_SPACE_SIZE    (1u << 9)
+#define VMX_EXIT_SAVE_PAT                   (1u << 18)
+#define VMX_EXIT_LOAD_PAT                   (1u << 19)
+#define VMX_EXIT_SAVE_EFER                  (1u << 20)
+#define VMX_EXIT_LOAD_EFER                  (1u << 21)
 #define VMX_ENTRY_IA32E_MODE                (1u << 9)
+#define VMX_ENTRY_LOAD_PAT                  (1u << 14)
+#define VMX_ENTRY_LOAD_EFER                 (1u << 15)
 #define VMX_CR4_VMXE                        (1ull << 13)
 
 #define EPT_ACCESS_MASK                     0x7ull

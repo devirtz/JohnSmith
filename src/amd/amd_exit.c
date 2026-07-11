@@ -20,6 +20,42 @@ AmdInjectInvalidOpcode(
     AmdInjectException(Vmcb, AMD_EVENT_INJECT_UD, 0);
 }
 
+static BOOLEAN
+AmdHandleXsetbv(
+    _In_ AMD_GUEST_REGISTERS* Registers,
+    _In_ AMD_VMCB* Vmcb
+    )
+{
+    int cpuid[4];
+    ULONG64 supported;
+    ULONG64 requested;
+    ULONG64 avx512;
+
+    if ((ULONG)Registers->Rcx != 0 || Vmcb->State.Cpl != 0 ||
+        (Vmcb->State.Cr4 & (1ull << 18)) == 0) {
+        return FALSE;
+    }
+    __cpuidex(cpuid, 0xD, 0);
+    supported = ((ULONG64)(ULONG)cpuid[3] << 32) | (ULONG)cpuid[0];
+    requested = ((ULONG64)(ULONG)Registers->Rdx << 32) |
+                (ULONG)Vmcb->State.Rax;
+    if ((requested & ~supported) != 0 || (requested & 3) != 3) return FALSE;
+    if ((requested & (1ull << 2)) != 0 &&
+        (requested & (1ull << 1)) == 0) return FALSE;
+    if (((requested >> 3) & 3) == 1 || ((requested >> 3) & 3) == 2) {
+        return FALSE;
+    }
+    avx512 = requested & (7ull << 5);
+    if (avx512 != 0 &&
+        (avx512 != (7ull << 5) || (requested & (1ull << 2)) == 0)) {
+        return FALSE;
+    }
+    if ((requested & (1ull << 18)) != 0 &&
+        (requested & (1ull << 17)) == 0) return FALSE;
+    _xsetbv(0, requested);
+    return TRUE;
+}
+
 ULONG
 AmdVmExitHandler(
     _Inout_ AMD_GUEST_REGISTERS* Registers,
@@ -42,6 +78,13 @@ AmdVmExitHandler(
     vmcb->Control.EventInjection =
         (vmcb->Control.ExitInterruptInfo & (1ull << 31)) != 0
         ? vmcb->Control.ExitInterruptInfo : 0;
+
+    if (exitCode == AMD_EXIT_INVALID &&
+        InterlockedCompareExchange(&Cpu->State, 0, 0) ==
+            HV_CPU_STARTING) {
+        context->Virtualized = FALSE;
+        return AMD_VMEXIT_STOP;
+    }
 
     if (exitCode == AMD_EXIT_CPUID) {
         __cpuidex(cpuid, (int)(ULONG)vmcb->State.Rax,
@@ -78,7 +121,9 @@ AmdVmExitHandler(
                        (ULONG)vmcb->State.Rax;
             if (msr == AMD_MSR_EFER) {
                 const ULONG64 validEfer = 0x000000000036FD01ull;
-                if ((msrValue & ~validEfer) != 0) {
+                if ((msrValue & ~validEfer) != 0 ||
+                    (((msrValue ^ context->GuestEfer) & (1ull << 8)) != 0 &&
+                     (vmcb->State.Cr0 & (1ull << 31)) != 0)) {
                     AmdInjectException(vmcb, AMD_EVENT_INJECT_GP, 0);
                     return AMD_VMEXIT_RESUME;
                 }
@@ -101,7 +146,34 @@ AmdVmExitHandler(
     }
 
     if (exitCode == AMD_EXIT_NPF) {
+        AMD_BACKEND_CONTEXT* backend =
+            (AMD_BACKEND_CONTEXT*)context->BackendContext;
+        ULONG64 fault = vmcb->Control.ExitInfo1;
+        ULONG64 guestPhysical = vmcb->Control.ExitInfo2;
+
+        if (backend == NULL || (fault & AMD_NPF_RESERVED) != 0 ||
+            (guestPhysical < backend->MapLimit &&
+             (fault & AMD_NPF_PRESENT) == 0)) {
+            KeBugCheckEx(HYPERVISOR_ERROR, AMD_BUGCHECK_UNEXPECTED_EXIT,
+                Cpu->ProcessorIndex, (ULONG_PTR)fault,
+                (ULONG_PTR)guestPhysical);
+        }
         AmdInjectException(vmcb, AMD_EVENT_INJECT_GP, 0);
+        return AMD_VMEXIT_RESUME;
+    }
+
+    if (exitCode == AMD_EXIT_INVLPGA) {
+        AmdInjectInvalidOpcode(vmcb);
+        return AMD_VMEXIT_RESUME;
+    }
+
+    if (exitCode == AMD_EXIT_XSETBV) {
+        if (AmdHandleXsetbv(Registers, vmcb)) {
+            vmcb->State.Rip = vmcb->Control.NextRip;
+            vmcb->Control.VmcbClean = 0;
+        } else {
+            AmdInjectException(vmcb, AMD_EVENT_INJECT_GP, 0);
+        }
         return AMD_VMEXIT_RESUME;
     }
 
@@ -115,9 +187,6 @@ AmdVmExitHandler(
             context->ResumeRsp = vmcb->State.Rsp;
             context->ResumeRip = vmcb->Control.NextRip;
             context->Virtualized = FALSE;
-            __writemsr(
-                AMD_MSR_VM_HSAVE_PA, context->OriginalHostSavePhysical);
-            __writemsr(AMD_MSR_EFER, context->OriginalEfer);
             return AMD_VMEXIT_STOP;
         }
         AmdInjectInvalidOpcode(vmcb);
@@ -132,4 +201,3 @@ AmdVmExitHandler(
     KeBugCheckEx(HYPERVISOR_ERROR, AMD_BUGCHECK_UNEXPECTED_EXIT,
         Cpu->ProcessorIndex, (ULONG_PTR)exitCode, vmcb->State.Rip);
 }
-

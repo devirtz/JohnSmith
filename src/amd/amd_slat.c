@@ -34,7 +34,7 @@ AmdPrepareTlbControl(
     generation = InterlockedCompareExchange64(
         &backend->SlatGeneration, 0, 0);
     if (Context->SlatGeneration != generation) {
-        Context->Vmcb->Control.TlbControl = 3;
+        Context->Vmcb->Control.TlbControl = backend->TlbFlushCommand;
         Context->Vmcb->Control.VmcbClean &= ~AMD_VMCB_CLEAN_ASID;
         InterlockedExchange64(&Context->SlatGeneration, generation);
     } else {
@@ -129,6 +129,82 @@ AmdRangeIsRam(
     return FALSE;
 }
 
+static BOOLEAN
+AmdRangeIntersectsRam(
+    _In_ PPHYSICAL_MEMORY_RANGE Ranges,
+    _In_ ULONG64 Base,
+    _In_ ULONG64 Size
+    )
+{
+    ULONG index;
+    ULONG64 end;
+
+    if (Ranges == NULL || Size == 0 || Base > MAXULONGLONG - Size) {
+        return FALSE;
+    }
+    end = Base + Size;
+
+    for (index = 0; Ranges[index].NumberOfBytes.QuadPart != 0; ++index) {
+        ULONG64 rangeBase = (ULONG64)Ranges[index].BaseAddress.QuadPart;
+        ULONG64 rangeSize = (ULONG64)Ranges[index].NumberOfBytes.QuadPart;
+        ULONG64 rangeEnd = rangeBase > MAXULONGLONG - rangeSize
+            ? MAXULONGLONG : rangeBase + rangeSize;
+
+        if (Base < rangeEnd && rangeBase < end) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+static NTSTATUS
+AmdCreateMixedMapping(
+    _Inout_ AMD_BACKEND_CONTEXT* Context,
+    _In_ PPHYSICAL_MEMORY_RANGE Ranges,
+    _In_ ULONG PdptIndex,
+    _In_ ULONG PdIndex,
+    _In_ ULONG64 PhysicalAddress,
+    _Out_ ULONG64* Entry
+    )
+{
+    AMD_SLAT_SPLIT* split;
+    ULONG64* pt;
+    ULONG index;
+
+    split = (AMD_SLAT_SPLIT*)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED, sizeof(*split), HV_POOL_TAG_SLAT_SPLIT);
+    if (split == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(split, sizeof(*split));
+    split->Pt = AmdAllocatePage();
+    if (split->Pt == NULL) {
+        ExFreePoolWithTag(split, HV_POOL_TAG_SLAT_SPLIT);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    pt = (ULONG64*)split->Pt;
+    for (index = 0; index < 512; ++index) {
+        ULONG64 pageAddress = PhysicalAddress +
+                              ((ULONG64)index << PAGE_SHIFT);
+        ULONG64 cacheFlags = AmdRangeIsRam(
+            Ranges, pageAddress, PAGE_SIZE)
+            ? Context->RamCacheFlags : Context->MmioCacheFlags;
+
+        pt[index] = (pageAddress & NPT_ADDRESS_MASK) |
+                    NPT_TABLE_PERMISSIONS |
+                    cacheFlags;
+    }
+
+    split->PdptIndex = PdptIndex;
+    split->PdIndex = PdIndex;
+    InsertTailList(&Context->SplitList, &split->Link);
+    *Entry = ((ULONG64)MmGetPhysicalAddress(pt).QuadPart &
+              NPT_ADDRESS_MASK) | NPT_TABLE_PERMISSIONS;
+    return STATUS_SUCCESS;
+}
+
 static ULONG64
 AmdPhysicalLimit(
     VOID
@@ -169,7 +245,10 @@ AmdBuildNpt(
     pdpt = (ULONG64*)Context->Pdpt;
     pml4[0] = ((ULONG64)MmGetPhysicalAddress(Context->Pdpt).QuadPart &
                NPT_ADDRESS_MASK) | NPT_TABLE_PERMISSIONS;
-    ranges = MmGetPhysicalMemoryRanges();
+    ranges = MmGetPhysicalMemoryRangesEx2(NULL, 0);
+    if (ranges == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
     pdptCount = (ULONG)((Context->MapLimit + ((1ull << 30) - 1)) >> 30);
     for (pdptIndex = 0; pdptIndex < pdptCount; ++pdptIndex) {
         ULONG64* pd;
@@ -188,17 +267,32 @@ AmdBuildNpt(
         for (pdIndex = 0; pdIndex < 512; ++pdIndex) {
             ULONG64 physical = ((ULONG64)pdptIndex << 30) |
                                ((ULONG64)pdIndex << 21);
-            ULONG64 cacheFlags;
+            NTSTATUS status;
             if (physical >= Context->MapLimit) break;
-            cacheFlags = AmdRangeIsRam(ranges, physical, 1ull << 21)
-                ? 0 : (NPT_PWT | NPT_PCD);
-            pd[pdIndex] = (physical & NPT_2MB_ADDRESS_MASK) |
-                          NPT_TABLE_PERMISSIONS | NPT_LARGE_PAGE |
-                          cacheFlags;
+            if (AmdRangeIsRam(ranges, physical, 1ull << 21)) {
+                pd[pdIndex] = (physical & NPT_2MB_ADDRESS_MASK) |
+                              NPT_TABLE_PERMISSIONS |
+                              NPT_LARGE_PAGE |
+                              Context->RamCacheFlags;
+            } else if (AmdRangeIntersectsRam(
+                           ranges, physical, 1ull << 21)) {
+                status = AmdCreateMixedMapping(
+                    Context, ranges, pdptIndex, pdIndex,
+                    physical, &pd[pdIndex]);
+                if (!NT_SUCCESS(status)) {
+                    ExFreePool(ranges);
+                    return status;
+                }
+            } else {
+                pd[pdIndex] = (physical & NPT_2MB_ADDRESS_MASK) |
+                              NPT_TABLE_PERMISSIONS |
+                              NPT_LARGE_PAGE |
+                              Context->MmioCacheFlags;
+            }
         }
     }
 
-    if (ranges != NULL) ExFreePool(ranges);
+    ExFreePool(ranges);
     return STATUS_SUCCESS;
 }
 
@@ -441,4 +535,3 @@ Exit:
     }
     return status;
 }
-

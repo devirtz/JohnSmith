@@ -58,8 +58,8 @@ IntelSupport(
     }
 
     featureControl = __readmsr(IA32_FEATURE_CONTROL);
-    if ((featureControl & 1) != 0 &&
-        (featureControl & (1ull << 2)) == 0) {
+    if ((featureControl & (1ull | (1ull << 2))) !=
+        (1ull | (1ull << 2))) {
         return STATUS_HV_FEATURE_UNAVAILABLE;
     }
 
@@ -253,9 +253,11 @@ IntelStart(
     context->OriginalCr4 = __readcr4();
 
     featureControl = __readmsr(IA32_FEATURE_CONTROL);
-    if ((featureControl & 1) == 0) {
-        __writemsr(IA32_FEATURE_CONTROL, featureControl | 1 | (1ull << 2));
+    if ((featureControl & (1ull | (1ull << 2))) !=
+        (1ull | (1ull << 2))) {
+        return STATUS_HV_FEATURE_UNAVAILABLE;
     }
+
     cr0 = (context->OriginalCr0 | __readmsr(IA32_VMX_CR0_FIXED0)) &
           __readmsr(IA32_VMX_CR0_FIXED1);
     cr4 = (context->OriginalCr4 | __readmsr(IA32_VMX_CR4_FIXED0) |
@@ -348,8 +350,17 @@ IntelStop(
     if (context->Launched || context->VmxOn) {
         return STATUS_HV_OPERATION_FAILED;
     }
-    __writecr4(context->OriginalCr4);
-    __writecr0(context->OriginalCr0);
+    __writemsr(IA32_FS_BASE, context->ResumeFsBase);
+    __writemsr(IA32_GS_BASE, context->ResumeGsBase);
+    __writemsr(IA32_PAT, context->ResumePat);
+    __writemsr(IA32_EFER, context->ResumeEfer);
+    __writemsr(IA32_SYSENTER_CS, context->ResumeSysenterCs);
+    __writemsr(IA32_SYSENTER_ESP, context->ResumeSysenterEsp);
+    __writemsr(IA32_SYSENTER_EIP, context->ResumeSysenterEip);
+    __writedr(7, context->ResumeDr7);
+    __writecr3(context->ResumeCr3);
+    __writecr4(context->ResumeCr4);
+    __writecr0(context->ResumeCr0);
     return STATUS_SUCCESS;
 }
 

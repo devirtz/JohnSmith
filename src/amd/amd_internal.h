@@ -25,17 +25,25 @@
 
 #define AMD_SVM_FEATURE_NPT             (1u << 0)
 #define AMD_SVM_FEATURE_NRIPS           (1u << 3)
+#define AMD_SVM_FEATURE_FLUSH_BY_ASID   (1u << 6)
 
 #define AMD_INTERCEPT_CPUID             (1u << 18)
+#define AMD_INTERCEPT_INVLPGA           (1u << 26)
 #define AMD_INTERCEPT_IOIO              (1u << 27)
 #define AMD_INTERCEPT_MSR               (1u << 28)
 #define AMD_INTERCEPT_SVM_INSTRUCTIONS  0x7fu
+#define AMD_INTERCEPT_XSETBV            (1u << 13)
 #define AMD_EXIT_CPUID                  0x72ull
+#define AMD_EXIT_INVLPGA                0x7Aull
 #define AMD_EXIT_VMRUN                  0x80ull
 #define AMD_EXIT_VMMCALL                0x81ull
 #define AMD_EXIT_SKINIT                 0x86ull
+#define AMD_EXIT_XSETBV                 0x8Dull
 #define AMD_EXIT_MSR                    0x7Cull
 #define AMD_EXIT_NPF                    0x400ull
+#define AMD_EXIT_INVALID                MAXULONGLONG
+#define AMD_NPF_PRESENT                 (1ull << 0)
+#define AMD_NPF_RESERVED                (1ull << 3)
 #define AMD_EVENT_INJECT_UD             0x80000306ull
 #define AMD_EVENT_INJECT_GP             0x80000B0Dull
 #define AMD_EVENT_INJECT_PF             0x80000B0Eull
@@ -73,7 +81,10 @@ typedef struct _AMD_BACKEND_CONTEXT {
     LIST_ENTRY SplitList;
     EX_PUSH_LOCK SlatLock;
     ULONG64 MapLimit;
+    ULONG64 RamCacheFlags;
+    ULONG64 MmioCacheFlags;
     ULONG MaxAsid;
+    UCHAR TlbFlushCommand;
     volatile LONG64 SlatGeneration;
 } AMD_BACKEND_CONTEXT;
 

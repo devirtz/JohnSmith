@@ -17,7 +17,7 @@ Authority: [AMD APM Volume 2, 24593 rev.
 | Nested paging/NPF | Section 15.25 |
 | VMRUN/VMMCALL | Volume 3 instruction reference |
 
-Code: `include/amd.h`, `src/amd.c`, `asm/amd.asm`.
+Code: `include/amd.h`, `src/amd.c`, `src/amd/`, `asm/amd.asm`.
 
 Keep `C_ASSERT` checks for every assembly-visible VMCB offset. Derive SVM, NPT,
 nRIP, ASID count, physical width, and flush behavior at runtime. Clear relevant

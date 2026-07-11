@@ -9,12 +9,22 @@ HV_MAGIC_R8  EQU 0A55A5AA5F00DCAFEh
 
 VMCB_RIP_OFFSET EQU 0578h
 VMCB_RSP_OFFSET EQU 05D8h
+VMCB_CR4_OFFSET EQU 0548h
+VMCB_CR3_OFFSET EQU 0550h
+VMCB_CR0_OFFSET EQU 0558h
+VMCB_DR7_OFFSET EQU 0560h
+VMCB_DR6_OFFSET EQU 0568h
+VMCB_CR2_OFFSET EQU 0640h
 
 .code
 
 AmdAsmLaunch PROC
     ; The fifth argument is the physical address of the host VMCB.
     mov r10, qword ptr [rsp + 40]
+    mov r11, qword ptr [r9 + 16]
+    mov qword ptr [r11 + 72], rsp
+    lea rax, AmdLaunchFailed
+    mov qword ptr [r11 + 80], rax
     mov qword ptr [rcx + VMCB_RSP_OFFSET], rsp
     lea rax, AmdGuestResume
     mov qword ptr [rcx + VMCB_RIP_OFFSET], rax
@@ -33,6 +43,7 @@ AmdRunGuest:
     mov rax, qword ptr [rsp + 16]
     vmload rax
     mov rax, qword ptr [rsp + 16]
+    stgi
     vmrun rax
 
     ; VMRUN restored the automatic host state.  Save the remaining guest
@@ -58,11 +69,28 @@ AmdRunGuest:
     push rcx
     push rax
 
-    mov rcx, rsp
-    mov rdx, qword ptr [rsp + 120]
+    ; Preserve ABI-volatile SIMD state across the C exit handler.
+    sub rsp, 96
+    movdqu xmmword ptr [rsp + 0], xmm0
+    movdqu xmmword ptr [rsp + 16], xmm1
+    movdqu xmmword ptr [rsp + 32], xmm2
+    movdqu xmmword ptr [rsp + 48], xmm3
+    movdqu xmmword ptr [rsp + 64], xmm4
+    movdqu xmmword ptr [rsp + 80], xmm5
+
+    lea rcx, [rsp + 96]
+    mov rdx, qword ptr [rsp + 216]
     sub rsp, 40
     call AmdVmExitHandler
     add rsp, 40
+
+    movdqu xmm0, xmmword ptr [rsp + 0]
+    movdqu xmm1, xmmword ptr [rsp + 16]
+    movdqu xmm2, xmmword ptr [rsp + 32]
+    movdqu xmm3, xmmword ptr [rsp + 48]
+    movdqu xmm4, xmmword ptr [rsp + 64]
+    movdqu xmm5, xmmword ptr [rsp + 80]
+    add rsp, 96
     cmp eax, 1
     je AmdShutdown
 
@@ -89,6 +117,27 @@ AmdShutdown:
     mov r10, qword ptr [rdx + 72]
     mov r11, qword ptr [rdx + 80]
 
+    ; VMEXIT restored launch-time host state. Reconstruct the current
+    ; Windows state from the guest VMCB before devirtualizing this CPU.
+    mov rax, qword ptr [rdx + 32]
+    vmload rax
+    mov rax, qword ptr [rdx]
+    mov rcx, qword ptr [rax + VMCB_CR3_OFFSET]
+    mov cr3, rcx
+    mov rcx, qword ptr [rax + VMCB_CR4_OFFSET]
+    mov cr4, rcx
+    mov rcx, qword ptr [rax + VMCB_CR0_OFFSET]
+    mov cr0, rcx
+    mov rcx, qword ptr [rax + VMCB_CR2_OFFSET]
+    mov cr2, rcx
+    mov rcx, qword ptr [rax + VMCB_DR7_OFFSET]
+    mov dr7, rcx
+    mov rcx, qword ptr [rax + VMCB_DR6_OFFSET]
+    mov dr6, rcx
+
+    ; #VMEXIT clears GIF. EFER.SVME remains set until AmdStop resumes.
+    stgi
+
     mov rbx, qword ptr [rsp + 24]
     mov rbp, qword ptr [rsp + 32]
     mov rsi, qword ptr [rsp + 40]
@@ -103,6 +152,10 @@ AmdShutdown:
 
 AmdGuestResume:
     xor eax, eax
+    ret
+
+AmdLaunchFailed:
+    mov eax, 1
     ret
 AmdAsmLaunch ENDP
 

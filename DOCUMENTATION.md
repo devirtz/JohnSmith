@@ -10,6 +10,8 @@ Primary-source policy for architecture work. Snapshot: **2026-07-11**.
 - Add `C_ASSERT` for layouts and runtime checks for optional CPU features.
 - A clean build is not hardware proof. Do not claim runtime safety without
   debugger-backed Intel and AMD bare-metal results.
+- Physical RAM discovery uses `MmGetPhysicalMemoryRangesEx2`; the supported
+  OS floor is Windows 10 version 2004.
 
 ## Code map
 
