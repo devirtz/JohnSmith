@@ -27,9 +27,13 @@ AmdSetMsrpmBit(
     }
 
     bit = index * 2;
-    if (Read) Msrpm[offset + bit / 8] |= (UCHAR)(1u << (bit & 7));
+    if (Read) {
+        Msrpm[offset + bit / 8] |= (UCHAR)(1u << (bit & 7));
+    }
     ++bit;
-    if (Write) Msrpm[offset + bit / 8] |= (UCHAR)(1u << (bit & 7));
+    if (Write) {
+        Msrpm[offset + bit / 8] |= (UCHAR)(1u << (bit & 7));
+    }
 }
 
 static VOID
@@ -114,7 +118,9 @@ AmdPrepare(
 
     context = (AMD_BACKEND_CONTEXT*)ExAllocatePool2(
         POOL_FLAG_NON_PAGED, sizeof(*context), HV_POOL_TAG_BACKEND);
-    if (context == NULL) return STATUS_INSUFFICIENT_RESOURCES;
+    if (context == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
     RtlZeroMemory(context, sizeof(*context));
     InitializeListHead(&context->SplitList);
     if (!AmdFindPatCacheFlags(
@@ -146,11 +152,41 @@ AmdFree(
     )
 {
     AMD_BACKEND_CONTEXT* context;
-    if (State == NULL || State->BackendContext == NULL) return;
+    if (State == NULL || State->BackendContext == NULL) {
+        return;
+    }
     context = (AMD_BACKEND_CONTEXT*)State->BackendContext;
     AmdFreeNpt(context);
     ExFreePoolWithTag(context, HV_POOL_TAG_BACKEND);
     State->BackendContext = NULL;
+}
+
+static VOID
+AmdDestroyCpuContext(
+    _In_opt_ AMD_CPU_CONTEXT* Context
+    )
+{
+    if (Context == NULL) {
+        return;
+    }
+    if (Context->HostStack != NULL) {
+        RtlSecureZeroMemory(Context->HostStack, AMD_HOST_STACK_SIZE);
+        ExFreePoolWithTag(Context->HostStack, HV_POOL_TAG_BACKEND);
+    }
+    if (Context->Msrpm != NULL) {
+        MmFreeContiguousMemory(Context->Msrpm);
+    }
+    if (Context->HostSave != NULL) {
+        MmFreeContiguousMemory(Context->HostSave);
+    }
+    if (Context->HostVmcb != NULL) {
+        MmFreeContiguousMemory(Context->HostVmcb);
+    }
+    if (Context->Vmcb != NULL) {
+        MmFreeContiguousMemory(Context->Vmcb);
+    }
+    RtlSecureZeroMemory(Context, sizeof(*Context));
+    ExFreePoolWithTag(Context, HV_POOL_TAG_BACKEND);
 }
 
 static NTSTATUS
@@ -169,7 +205,9 @@ AmdPrepareCpu(
 
     context = (AMD_CPU_CONTEXT*)ExAllocatePool2(
         POOL_FLAG_NON_PAGED, sizeof(*context), HV_POOL_TAG_BACKEND);
-    if (context == NULL) return STATUS_INSUFFICIENT_RESOURCES;
+    if (context == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
     RtlZeroMemory(context, sizeof(*context));
     context->Vmcb = (AMD_VMCB*)AmdAllocatePage();
     context->HostVmcb = (AMD_VMCB*)AmdAllocatePage();
@@ -180,20 +218,7 @@ AmdPrepareCpu(
     if (context->Vmcb == NULL || context->HostVmcb == NULL ||
         context->HostSave == NULL || context->HostStack == NULL ||
         context->Msrpm == NULL) {
-        if (context->Vmcb != NULL) MmFreeContiguousMemory(context->Vmcb);
-        if (context->HostVmcb != NULL) {
-            MmFreeContiguousMemory(context->HostVmcb);
-        }
-        if (context->HostSave != NULL) {
-            MmFreeContiguousMemory(context->HostSave);
-        }
-        if (context->HostStack != NULL) {
-            ExFreePoolWithTag(context->HostStack, HV_POOL_TAG_BACKEND);
-        }
-        if (context->Msrpm != NULL) {
-            MmFreeContiguousMemory(context->Msrpm);
-        }
-        ExFreePoolWithTag(context, HV_POOL_TAG_BACKEND);
+        AmdDestroyCpuContext(context);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     context->VmcbPhysical = MmGetPhysicalAddress(context->Vmcb);
@@ -217,24 +242,11 @@ AmdFreeCpu(
 {
     AMD_CPU_CONTEXT* context;
     UNREFERENCED_PARAMETER(State);
-    if (Cpu == NULL || Cpu->VendorContext == NULL) return;
+    if (Cpu == NULL || Cpu->VendorContext == NULL) {
+        return;
+    }
     context = (AMD_CPU_CONTEXT*)Cpu->VendorContext;
-    if (context->HostStack != NULL) {
-        RtlSecureZeroMemory(context->HostStack, AMD_HOST_STACK_SIZE);
-        ExFreePoolWithTag(context->HostStack, HV_POOL_TAG_BACKEND);
-    }
-    if (context->Msrpm != NULL) {
-        MmFreeContiguousMemory(context->Msrpm);
-    }
-    if (context->HostSave != NULL) {
-        MmFreeContiguousMemory(context->HostSave);
-    }
-    if (context->HostVmcb != NULL) {
-        MmFreeContiguousMemory(context->HostVmcb);
-    }
-    if (context->Vmcb != NULL) MmFreeContiguousMemory(context->Vmcb);
-    RtlSecureZeroMemory(context, sizeof(*context));
-    ExFreePoolWithTag(context, HV_POOL_TAG_BACKEND);
+    AmdDestroyCpuContext(context);
     Cpu->VendorContext = NULL;
 }
 
@@ -334,7 +346,9 @@ AmdStop(
         return STATUS_INVALID_DEVICE_STATE;
     }
     context = (AMD_CPU_CONTEXT*)Cpu->VendorContext;
-    if (!context->Virtualized) return STATUS_SUCCESS;
+    if (!context->Virtualized) {
+        return STATUS_SUCCESS;
+    }
     AmdAsmStop(context->StopCookie);
     if (context->Virtualized) {
         return STATUS_HV_OPERATION_FAILED;

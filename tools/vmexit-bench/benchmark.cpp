@@ -29,6 +29,8 @@ struct alignas(64) ClockLine {
 
 struct alignas(64) ControlLine {
     std::atomic<bool> ready;
+    std::atomic<bool> setupSucceeded;
+    std::atomic<DWORD> setupError;
     std::atomic<bool> stop;
 };
 #pragma warning(pop)
@@ -70,7 +72,11 @@ static bool PinCurrentThread(const LogicalCpu cpu)
 static std::vector<LogicalCpu> FirstLogicalCpuPerCore()
 {
     DWORD bytes = 0;
-    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &bytes);
+    if (GetLogicalProcessorInformationEx(
+            RelationProcessorCore, nullptr, &bytes) ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER || bytes == 0) {
+        return {};
+    }
     std::vector<BYTE> storage(bytes);
     if (!GetLogicalProcessorInformationEx(
             RelationProcessorCore,
@@ -83,6 +89,9 @@ static std::vector<LogicalCpu> FirstLogicalCpuPerCore()
     for (DWORD offset = 0; offset < bytes;) {
         auto* entry = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(
             storage.data() + offset);
+        if (entry->Size == 0 || entry->Size > bytes - offset) {
+            return {};
+        }
         if (entry->Relationship == RelationProcessorCore) {
             const auto& relationship = entry->Processor;
             for (WORD groupIndex = 0; groupIndex < relationship.GroupCount; ++groupIndex) {
@@ -183,17 +192,42 @@ int main(int argc, char** argv)
     ControlLine control{};
 
     std::thread clockThread([&] {
-        PinCurrentThread(clockCpu);
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+        const bool pinned = PinCurrentThread(clockCpu);
+        DWORD setupError = pinned ? ERROR_SUCCESS : GetLastError();
+        const bool prioritized = pinned && SetThreadPriority(
+            GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != FALSE;
+        if (pinned && !prioritized) {
+            setupError = GetLastError();
+        }
+        control.setupError.store(setupError, std::memory_order_relaxed);
+        control.setupSucceeded.store(
+            pinned && prioritized, std::memory_order_relaxed);
         control.ready.store(true, std::memory_order_release);
         while (!control.stop.load(std::memory_order_relaxed)) {
             ++clock.value;
         }
     });
 
-    PinCurrentThread(testCpu);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    const bool testPinned = PinCurrentThread(testCpu);
+    DWORD testSetupError = testPinned ? ERROR_SUCCESS : GetLastError();
+    const bool testPrioritized = testPinned && SetThreadPriority(
+        GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != FALSE;
+    if (testPinned && !testPrioritized) {
+        testSetupError = GetLastError();
+    }
     while (!control.ready.load(std::memory_order_acquire)) YieldProcessor();
+    if (!testPinned || !testPrioritized ||
+        !control.setupSucceeded.load(std::memory_order_relaxed)) {
+        control.stop.store(true, std::memory_order_relaxed);
+        clockThread.join();
+        std::fprintf(
+            stderr,
+            "Failed to pin or prioritize benchmark threads "
+            "(test error %lu, clock error %lu).\n",
+            testSetupError,
+            control.setupError.load(std::memory_order_relaxed));
+        return 4;
+    }
     Sleep(50);
 
     std::printf(
@@ -214,7 +248,7 @@ int main(int argc, char** argv)
         "SERIALIZE", MeasureSerialize, clock, sampleCount, serialize);
     const bool haveLeaf0 = RunProbe(
         "CPUID leaf 0", MeasureCpuidLeaf0, clock, sampleCount, leaf0);
-    const bool haveLeaf16 = RunProbe(
+    const bool haveLeaf16 = maximumLeaf >= 0x16 && RunProbe(
         "CPUID leaf 16h", MeasureCpuidLeaf16, clock, sampleCount, leaf16);
     const bool haveVmcall = requestVmcall && RunProbe(
         "VMCALL floor", MeasureVmcall, clock, sampleCount, vmcall);

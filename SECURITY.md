@@ -1,7 +1,23 @@
-# Security Policy
+# Security policy
 
-JohnSmith is educational kernel and virtualization code. It is not hardened for hostile production workloads.
+JohnSmith is experimental kernel and virtualization code. It is not hardened
+for hostile guests or production deployment.
 
-Report vulnerabilities privately through GitHub Security Advisories. Include the affected CPU vendor, Windows build, reproduction steps, and any VM-exit or bugcheck data. Do not publish working kernel exploitation details before a fix is available.
+## Reporting
 
-Never attach private signing keys, crash dumps containing secrets, or proprietary processor documentation.
+Report vulnerabilities privately through GitHub Security Advisories. Include:
+
+- affected CPU vendor/model and Windows build;
+- firmware, Hyper-V, VBS, HVCI, and CET state;
+- driver configuration, service path, and SHA-256;
+- reproduction steps and expected/actual result;
+- VM-exit reason, qualification, and bugcheck parameters when available.
+
+Do not publish working kernel exploitation details before a fix is available.
+Never attach private signing keys or crash dumps containing secrets.
+
+## Supported security boundary
+
+The project is intended for controlled research. It does not claim isolation
+against a malicious guest, side-channel resistance, nested-virtualization
+security, supervisor-CET support, or production-grade device isolation.

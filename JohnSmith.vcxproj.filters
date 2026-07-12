@@ -16,6 +16,9 @@
     <Filter Include="Source Files\Core">
       <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\Common">
+      <UniqueIdentifier>{871F96C5-A673-4C6D-9B07-40259B865F25}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Source Files\Intel">
       <UniqueIdentifier>{5D5AA125-9CC0-4A92-840D-E6A06F8B7825}</UniqueIdentifier>
     </Filter>
@@ -32,6 +35,7 @@
     <ClInclude Include="include\intel.h"><Filter>Header Files\Public</Filter></ClInclude>
     <ClInclude Include="include\amd.h"><Filter>Header Files\Public</Filter></ClInclude>
     <ClInclude Include="include\introspection.h"><Filter>Header Files\Public</Filter></ClInclude>
+    <ClInclude Include="src\common\x86_common.h"><Filter>Header Files\Private</Filter></ClInclude>
     <ClInclude Include="src\intel\intel_internal.h"><Filter>Header Files\Private</Filter></ClInclude>
     <ClInclude Include="src\amd\amd_internal.h"><Filter>Header Files\Private</Filter></ClInclude>
   </ItemGroup>
@@ -40,6 +44,7 @@
     <ClCompile Include="src\hv.c"><Filter>Source Files\Core</Filter></ClCompile>
     <ClCompile Include="src\log.c"><Filter>Source Files\Core</Filter></ClCompile>
     <ClCompile Include="src\introspection.c"><Filter>Source Files\Core</Filter></ClCompile>
+    <ClCompile Include="src\common\x86_common.c"><Filter>Source Files\Common</Filter></ClCompile>
     <ClCompile Include="src\intel.c"><Filter>Source Files\Intel</Filter></ClCompile>
     <ClCompile Include="src\intel\intel_exit.c"><Filter>Source Files\Intel</Filter></ClCompile>
     <ClCompile Include="src\intel\intel_slat.c"><Filter>Source Files\Intel</Filter></ClCompile>

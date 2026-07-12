@@ -57,8 +57,12 @@ IntelSetMsrBitmapBit(
         return;
     }
 
-    if (Read) Bitmap[readBase + index / 8] |= (UCHAR)(1u << (index & 7));
-    if (Write) Bitmap[writeBase + index / 8] |= (UCHAR)(1u << (index & 7));
+    if (Read) {
+        Bitmap[readBase + index / 8] |= (UCHAR)(1u << (index & 7));
+    }
+    if (Write) {
+        Bitmap[writeBase + index / 8] |= (UCHAR)(1u << (index & 7));
+    }
 }
 
 static VOID
@@ -176,6 +180,31 @@ IntelFree(
     State->BackendContext = NULL;
 }
 
+static VOID
+IntelDestroyCpuContext(
+    _In_opt_ INTEL_CPU_CONTEXT* Context
+    )
+{
+    if (Context == NULL) {
+        return;
+    }
+    if (Context->HostStack != NULL) {
+        RtlSecureZeroMemory(Context->HostStack, INTEL_HOST_STACK_SIZE);
+        ExFreePoolWithTag(Context->HostStack, HV_POOL_TAG_BACKEND);
+    }
+    if (Context->MsrBitmap != NULL) {
+        MmFreeContiguousMemory(Context->MsrBitmap);
+    }
+    if (Context->Vmcs != NULL) {
+        MmFreeContiguousMemory(Context->Vmcs);
+    }
+    if (Context->Vmxon != NULL) {
+        MmFreeContiguousMemory(Context->Vmxon);
+    }
+    RtlSecureZeroMemory(Context, sizeof(*Context));
+    ExFreePoolWithTag(Context, HV_POOL_TAG_BACKEND);
+}
+
 static NTSTATUS
 IntelPrepareCpu(
     _Inout_ HV_STATE* State,
@@ -203,15 +232,7 @@ IntelPrepareCpu(
     context->MsrBitmap = IntelAllocatePage(MAXULONG);
     if (context->Vmxon == NULL || context->Vmcs == NULL ||
         context->HostStack == NULL || context->MsrBitmap == NULL) {
-        if (context->Vmxon != NULL) MmFreeContiguousMemory(context->Vmxon);
-        if (context->Vmcs != NULL) MmFreeContiguousMemory(context->Vmcs);
-        if (context->HostStack != NULL) {
-            ExFreePoolWithTag(context->HostStack, HV_POOL_TAG_BACKEND);
-        }
-        if (context->MsrBitmap != NULL) {
-            MmFreeContiguousMemory(context->MsrBitmap);
-        }
-        ExFreePoolWithTag(context, HV_POOL_TAG_BACKEND);
+        IntelDestroyCpuContext(context);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -242,17 +263,7 @@ IntelFreeCpu(
         return;
     }
     context = (INTEL_CPU_CONTEXT*)Cpu->VendorContext;
-    if (context->HostStack != NULL) {
-        RtlSecureZeroMemory(context->HostStack, INTEL_HOST_STACK_SIZE);
-        ExFreePoolWithTag(context->HostStack, HV_POOL_TAG_BACKEND);
-    }
-    if (context->MsrBitmap != NULL) {
-        MmFreeContiguousMemory(context->MsrBitmap);
-    }
-    if (context->Vmcs != NULL) MmFreeContiguousMemory(context->Vmcs);
-    if (context->Vmxon != NULL) MmFreeContiguousMemory(context->Vmxon);
-    RtlSecureZeroMemory(context, sizeof(*context));
-    ExFreePoolWithTag(context, HV_POOL_TAG_BACKEND);
+    IntelDestroyCpuContext(context);
     Cpu->VendorContext = NULL;
 }
 
@@ -404,7 +415,9 @@ IntelStart(
             (((INTEL_BACKEND_CONTEXT*)context->BackendContext)
                 ->EptVpidCapabilities & (1ull << 25)) != 0
             ? INVEPT_SINGLE_CONTEXT : INVEPT_ALL_CONTEXTS;
-        if (type == INVEPT_ALL_CONTEXTS) descriptor.Context = 0;
+        if (type == INVEPT_ALL_CONTEXTS) {
+            descriptor.Context = 0;
+        }
         context->StartFailureStage = INTEL_START_STAGE_INVEPT;
         if (IntelAsmInvept(type, &descriptor) != 0) {
             status = STATUS_HV_OPERATION_FAILED;

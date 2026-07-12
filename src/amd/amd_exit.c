@@ -1,4 +1,5 @@
 #include "amd_internal.h"
+#include "../common/x86_common.h"
 
 DECLSPEC_NORETURN
 static VOID
@@ -46,37 +47,35 @@ AmdInjectInvalidOpcode(
 }
 
 static BOOLEAN
+AmdIsPrivateHypercall(
+    _In_ const AMD_GUEST_REGISTERS* Registers,
+    _In_ const AMD_VMCB* Vmcb
+    )
+{
+    return Vmcb->State.Cpl == 0 &&
+           Vmcb->State.Rax == HV_HYPERCALL_MAGIC_RAX &&
+           Registers->Rcx == HV_HYPERCALL_MAGIC_RCX &&
+           Registers->Rdx == HV_HYPERCALL_MAGIC_RDX &&
+           Registers->R8 == HV_HYPERCALL_MAGIC_R8;
+}
+
+static BOOLEAN
 AmdHandleXsetbv(
     _In_ AMD_GUEST_REGISTERS* Registers,
     _In_ AMD_VMCB* Vmcb
     )
 {
-    int cpuid[4];
-    ULONG64 supported;
     ULONG64 requested;
-    ULONG64 avx512;
 
     if ((ULONG)Registers->Rcx != 0 || Vmcb->State.Cpl != 0 ||
         (Vmcb->State.Cr4 & (1ull << 18)) == 0) {
         return FALSE;
     }
-    __cpuidex(cpuid, 0xD, 0);
-    supported = ((ULONG64)(ULONG)cpuid[3] << 32) | (ULONG)cpuid[0];
     requested = ((ULONG64)(ULONG)Registers->Rdx << 32) |
                 (ULONG)Vmcb->State.Rax;
-    if ((requested & ~supported) != 0 || (requested & 3) != 3) return FALSE;
-    if ((requested & (1ull << 2)) != 0 &&
-        (requested & (1ull << 1)) == 0) return FALSE;
-    if (((requested >> 3) & 3) == 1 || ((requested >> 3) & 3) == 2) {
+    if (!HvX86IsValidXcr0(requested)) {
         return FALSE;
     }
-    avx512 = requested & (7ull << 5);
-    if (avx512 != 0 &&
-        (avx512 != (7ull << 5) || (requested & (1ull << 2)) == 0)) {
-        return FALSE;
-    }
-    if ((requested & (1ull << 18)) != 0 &&
-        (requested & (1ull << 17)) == 0) return FALSE;
     _xsetbv(0, requested);
     return TRUE;
 }
@@ -90,7 +89,6 @@ AmdVmExitHandler(
     AMD_CPU_CONTEXT* context;
     AMD_VMCB* vmcb;
     ULONG64 exitCode;
-    int cpuid[4];
 
     if (Registers == NULL || Cpu == NULL || Cpu->VendorContext == NULL) {
         KeBugCheckEx(HYPERVISOR_ERROR, AMD_BUGCHECK_UNEXPECTED_EXIT,
@@ -109,18 +107,6 @@ AmdVmExitHandler(
             HV_CPU_STARTING) {
         context->Virtualized = FALSE;
         return AMD_VMEXIT_STOP;
-    }
-
-    if (exitCode == AMD_EXIT_CPUID) {
-        __cpuidex(cpuid, (int)(ULONG)vmcb->State.Rax,
-            (int)(ULONG)Registers->Rcx);
-        vmcb->State.Rax = (ULONG)cpuid[0];
-        Registers->Rbx = (ULONG)cpuid[1];
-        Registers->Rcx = (ULONG)cpuid[2];
-        Registers->Rdx = (ULONG)cpuid[3];
-        vmcb->State.Rip = vmcb->Control.NextRip;
-        vmcb->Control.VmcbClean = 0;
-        return AMD_VMEXIT_RESUME;
     }
 
     if (exitCode == AMD_EXIT_MSR) {
@@ -195,16 +181,20 @@ AmdVmExitHandler(
     }
 
     if (exitCode == AMD_EXIT_VMMCALL) {
-        if (vmcb->State.Cpl == 0 &&
-            vmcb->State.Rax == HV_HYPERCALL_MAGIC_RAX &&
-            Registers->Rcx == HV_HYPERCALL_MAGIC_RCX &&
-            Registers->Rdx == HV_HYPERCALL_MAGIC_RDX &&
-            Registers->R8 == HV_HYPERCALL_MAGIC_R8 &&
-            Registers->R9 == context->StopCookie) {
+        if (!AmdIsPrivateHypercall(Registers, vmcb)) {
+            AmdInjectInvalidOpcode(vmcb, Cpu);
+            return AMD_VMEXIT_RESUME;
+        }
+        if (Registers->R9 == context->StopCookie) {
             context->ResumeRsp = vmcb->State.Rsp;
             context->ResumeRip = vmcb->Control.NextRip;
             context->Virtualized = FALSE;
             return AMD_VMEXIT_STOP;
+        }
+        if (Registers->R9 == HV_HYPERCALL_SLAT_R9) {
+            vmcb->State.Rip = vmcb->Control.NextRip;
+            vmcb->Control.VmcbClean = 0;
+            return AMD_VMEXIT_RESUME;
         }
         AmdInjectInvalidOpcode(vmcb, Cpu);
         return AMD_VMEXIT_RESUME;

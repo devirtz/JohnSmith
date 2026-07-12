@@ -1,4 +1,5 @@
 #include "amd_internal.h"
+#include "../common/x86_common.h"
 
 static PVOID
 AmdFindSplitPt(
@@ -30,7 +31,9 @@ AmdPrepareTlbControl(
         (AMD_BACKEND_CONTEXT*)Context->BackendContext;
     LONG64 generation;
 
-    if (backend == NULL) return;
+    if (backend == NULL) {
+        return;
+    }
     generation = InterlockedCompareExchange64(
         &backend->SlatGeneration, 0, 0);
     if (Context->SlatGeneration != generation) {
@@ -49,9 +52,8 @@ AmdSlatRendezvous(
     _In_ ULONG_PTR Argument
     )
 {
-    int registers[4];
     UNREFERENCED_PARAMETER(Argument);
-    __cpuid(registers, 0);
+    AmdAsmSlatRendezvous();
     return 0;
 }
 
@@ -105,59 +107,6 @@ AmdAllocatePage(
     return AmdAllocateContiguous(PAGE_SIZE);
 }
 
-static BOOLEAN
-AmdRangeIsRam(
-    _In_opt_ PPHYSICAL_MEMORY_RANGE Ranges,
-    _In_ ULONG64 Base,
-    _In_ ULONG64 Size
-    )
-{
-    ULONG index;
-
-    if (Ranges == NULL || Base > MAXULONGLONG - Size) {
-        return FALSE;
-    }
-    for (index = 0; Ranges[index].NumberOfBytes.QuadPart != 0; ++index) {
-        ULONG64 rangeBase = (ULONG64)Ranges[index].BaseAddress.QuadPart;
-        ULONG64 rangeSize = (ULONG64)Ranges[index].NumberOfBytes.QuadPart;
-        if (Base >= rangeBase &&
-            Base - rangeBase <= rangeSize &&
-            Size <= rangeSize - (Base - rangeBase)) {
-            return TRUE;
-        }
-    }
-    return FALSE;
-}
-
-static BOOLEAN
-AmdRangeIntersectsRam(
-    _In_ PPHYSICAL_MEMORY_RANGE Ranges,
-    _In_ ULONG64 Base,
-    _In_ ULONG64 Size
-    )
-{
-    ULONG index;
-    ULONG64 end;
-
-    if (Ranges == NULL || Size == 0 || Base > MAXULONGLONG - Size) {
-        return FALSE;
-    }
-    end = Base + Size;
-
-    for (index = 0; Ranges[index].NumberOfBytes.QuadPart != 0; ++index) {
-        ULONG64 rangeBase = (ULONG64)Ranges[index].BaseAddress.QuadPart;
-        ULONG64 rangeSize = (ULONG64)Ranges[index].NumberOfBytes.QuadPart;
-        ULONG64 rangeEnd = rangeBase > MAXULONGLONG - rangeSize
-            ? MAXULONGLONG : rangeBase + rangeSize;
-
-        if (Base < rangeEnd && rangeBase < end) {
-            return TRUE;
-        }
-    }
-
-    return FALSE;
-}
-
 static NTSTATUS
 AmdCreateMixedMapping(
     _Inout_ AMD_BACKEND_CONTEXT* Context,
@@ -188,7 +137,7 @@ AmdCreateMixedMapping(
     for (index = 0; index < 512; ++index) {
         ULONG64 pageAddress = PhysicalAddress +
                               ((ULONG64)index << PAGE_SHIFT);
-        ULONG64 cacheFlags = AmdRangeIsRam(
+        ULONG64 cacheFlags = HvX86RangeIsRam(
             Ranges, pageAddress, PAGE_SIZE)
             ? Context->RamCacheFlags : Context->MmioCacheFlags;
 
@@ -205,21 +154,6 @@ AmdCreateMixedMapping(
     return STATUS_SUCCESS;
 }
 
-static ULONG64
-AmdPhysicalLimit(
-    VOID
-    )
-{
-    int registers[4];
-    ULONG bits;
-    ULONG64 limit;
-
-    __cpuid(registers, 0x80000008);
-    bits = (ULONG)registers[0] & 0xffu;
-    limit = bits >= 63 ? MAXLONGLONG : (1ull << bits);
-    return min(limit, HV_SLAT_MAXIMUM_ADDRESS);
-}
-
 NTSTATUS
 AmdBuildNpt(
     _Inout_ AMD_BACKEND_CONTEXT* Context
@@ -231,7 +165,7 @@ AmdBuildNpt(
     ULONG pdptCount;
     ULONG pdptIndex;
 
-    Context->MapLimit = AmdPhysicalLimit();
+    Context->MapLimit = HvX86GetSlatMapLimit();
     if (Context->MapLimit < (1ull << 32)) {
         return STATUS_HV_FEATURE_UNAVAILABLE;
     }
@@ -256,7 +190,7 @@ AmdBuildNpt(
 
         Context->Pds[pdptIndex] = AmdAllocatePage();
         if (Context->Pds[pdptIndex] == NULL) {
-            if (ranges != NULL) ExFreePool(ranges);
+            ExFreePool(ranges);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
         pd = (ULONG64*)Context->Pds[pdptIndex];
@@ -268,13 +202,15 @@ AmdBuildNpt(
             ULONG64 physical = ((ULONG64)pdptIndex << 30) |
                                ((ULONG64)pdIndex << 21);
             NTSTATUS status;
-            if (physical >= Context->MapLimit) break;
-            if (AmdRangeIsRam(ranges, physical, 1ull << 21)) {
+            if (physical >= Context->MapLimit) {
+                break;
+            }
+            if (HvX86RangeIsRam(ranges, physical, 1ull << 21)) {
                 pd[pdIndex] = (physical & NPT_2MB_ADDRESS_MASK) |
                               NPT_TABLE_PERMISSIONS |
                               NPT_LARGE_PAGE |
                               Context->RamCacheFlags;
-            } else if (AmdRangeIntersectsRam(
+            } else if (HvX86RangeIntersectsRam(
                            ranges, physical, 1ull << 21)) {
                 status = AmdCreateMixedMapping(
                     Context, ranges, pdptIndex, pdIndex,
@@ -359,7 +295,9 @@ AmdSlatMayChange(
     ULONG index;
     if (lifecycle == HV_LIFECYCLE_STARTING ||
         lifecycle == HV_LIFECYCLE_RUNNING) return TRUE;
-    if (lifecycle != HV_LIFECYCLE_STOPPING) return FALSE;
+    if (lifecycle != HV_LIFECYCLE_STOPPING) {
+        return FALSE;
+    }
     for (index = 0; index < State->CpuCount; ++index) {
         if (InterlockedCompareExchange(&State->Cpus[index].State, 0, 0) !=
             HV_CPU_PREPARED) {
@@ -377,7 +315,9 @@ AmdEntryAccess(
     ULONG access = 0;
     if ((Entry & NPT_PRESENT) != 0) {
         access |= HV_PAGE_ACCESS_READ;
-        if ((Entry & NPT_WRITE) != 0) access |= HV_PAGE_ACCESS_WRITE;
+        if ((Entry & NPT_WRITE) != 0) {
+            access |= HV_PAGE_ACCESS_WRITE;
+        }
         if ((Entry & NPT_NO_EXECUTE) == 0) {
             access |= HV_PAGE_ACCESS_EXECUTE;
         }
@@ -392,8 +332,12 @@ AmdApplyAccess(
     )
 {
     Entry &= ~(NPT_PRESENT | NPT_WRITE | NPT_NO_EXECUTE);
-    if ((((ULONG)Access) & HV_PAGE_ACCESS_READ) != 0) Entry |= NPT_PRESENT;
-    if ((((ULONG)Access) & HV_PAGE_ACCESS_WRITE) != 0) Entry |= NPT_WRITE;
+    if ((((ULONG)Access) & HV_PAGE_ACCESS_READ) != 0) {
+        Entry |= NPT_PRESENT;
+    }
+    if ((((ULONG)Access) & HV_PAGE_ACCESS_WRITE) != 0) {
+        Entry |= NPT_WRITE;
+    }
     if ((((ULONG)Access) & HV_PAGE_ACCESS_EXECUTE) == 0) {
         Entry |= NPT_NO_EXECUTE;
     }

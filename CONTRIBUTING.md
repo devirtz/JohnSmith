@@ -1,14 +1,31 @@
 # Contributing
 
-Keep changes small, architecture-documented, and warning-free.
+Keep changes narrow, architecture-backed, and warning-free.
 
-Before opening a pull request:
+## Required before review
 
-1. Build Debug and Release for x64.
-2. Preserve synchronized all-CPU rollback and fail-stop teardown.
-3. Validate every VMCS/VMCB control against its capability bits.
-4. Add a handler before enabling a new VM-exit intercept.
-5. Do not commit binaries, signing keys, or build output. Documentation
-   snapshots must be public vendor originals with their revision recorded.
+1. Build Debug, Release, and Benchmark x64.
+2. Run WDK C/C++ analysis on Release.
+3. Preserve synchronized all-CPU rollback and fail-stop teardown.
+4. Validate VMCS/VMCB controls against capability bits.
+5. Add complete handling before enabling a new intercept.
+6. Add compile-time assertions for assembly-visible layouts.
+7. Cite the manual revision and section for architecture changes.
+8. Run the relevant bare-metal lifecycle and SLAT tests.
 
-Hardware testing must state the CPU model, Windows version, enabled security features, and signing mode.
+Use the checklist in [Build and test](docs/build-and-test.md). Performance work
+must follow [Performance and measurement](docs/performance.md).
+
+## Evidence
+
+Hardware results must identify CPU model/stepping, Windows build, firmware and
+security state, driver configuration, installed service path, SHA-256, and
+measurement method. A build on one vendor is not runtime proof for the other.
+
+## Repository hygiene
+
+- Do not commit build output, private signing keys, or crash dumps.
+- Preserve unrelated worktree changes and vendored submodule state.
+- Store only public, unmodified vendor documents or open-access papers.
+- Add every archived source to [Reference catalog](docs/references.md) with its
+  revision, provenance, role, and SHA-256.

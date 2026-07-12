@@ -168,6 +168,8 @@
 #define VMX_ENTRY_LOAD_PAT                  (1u << 14)
 #define VMX_ENTRY_LOAD_EFER                 (1u << 15)
 #define VMX_CR4_VMXE                        (1ull << 13)
+#define X86_CR4_PCIDE                       (1ull << 17)
+#define X86_CR3_NOFLUSH                     (1ull << 63)
 #define CPUID_CET_SS                        (1u << 7)
 #define CPUID_CET_IBT                       (1u << 20)
 #define IA32_DEBUGCTL_BTF                    (1ull << 1)

@@ -1,4 +1,5 @@
 #include "intel_internal.h"
+#include "../common/x86_common.h"
 
 #define VMX_EVENT_INFORMATION_MASK 0x80000FFFu
 
@@ -388,8 +389,29 @@ IntelHandleCrAccess(
             return status;
         }
         if (cr == 3) {
+            ULONG64 guestCr4;
+            BOOLEAN suppressInvalidation;
+
+            /*
+             * Intel SDM rev. 092, MOV to/from Control Registers: with
+             * CR4.PCIDE set, source bit 63 suppresses invalidation but is
+             * never stored in CR3.
+             */
+            if (!IntelVmReadValue(VMCS_CR4_READ_SHADOW, &guestCr4)) {
+                return STATUS_HV_INVALID_VP_STATE;
+            }
+            suppressInvalidation =
+                (guestCr4 & X86_CR4_PCIDE) != 0 &&
+                (requested & X86_CR3_NOFLUSH) != 0;
+            if ((guestCr4 & X86_CR4_PCIDE) == 0 &&
+                (requested & X86_CR3_NOFLUSH) != 0) {
+                return STATUS_NOT_SUPPORTED;
+            }
+
+            requested &= ~X86_CR3_NOFLUSH;
             status = IntelVmWrite(VMCS_GUEST_CR3, requested);
-            if (NT_SUCCESS(status) && Context->Vpid != 0) {
+            if (NT_SUCCESS(status) && Context->Vpid != 0 &&
+                !suppressInvalidation) {
                 INTEL_INVALIDATION_DESCRIPTOR descriptor;
 
                 descriptor.Context = Context->Vpid;
@@ -470,10 +492,7 @@ IntelHandleXsetbv(
     _In_ INTEL_GUEST_REGISTERS* Registers
     )
 {
-    int cpuid[4];
-    ULONG64 supported;
     ULONG64 requested;
-    ULONG64 avx512;
     ULONG64 csSelector;
     ULONG64 guestCr4;
 
@@ -483,23 +502,11 @@ IntelHandleXsetbv(
         (csSelector & 3) != 0 || (guestCr4 & (1ull << 18)) == 0) {
         return FALSE;
     }
-    __cpuidex(cpuid, 0xD, 0);
-    supported = ((ULONG64)(ULONG)cpuid[3] << 32) | (ULONG)cpuid[0];
     requested = ((ULONG64)(ULONG)Registers->Rdx << 32) |
                 (ULONG)Registers->Rax;
-    if ((requested & ~supported) != 0 || (requested & 3) != 3) return FALSE;
-    if ((requested & (1ull << 2)) != 0 &&
-        (requested & (1ull << 1)) == 0) return FALSE;
-    if (((requested >> 3) & 3) == 1 || ((requested >> 3) & 3) == 2) {
+    if (!HvX86IsValidXcr0(requested)) {
         return FALSE;
     }
-    avx512 = requested & (7ull << 5);
-    if (avx512 != 0 &&
-        (avx512 != (7ull << 5) || (requested & (1ull << 2)) == 0)) {
-        return FALSE;
-    }
-    if ((requested & (1ull << 18)) != 0 &&
-        (requested & (1ull << 17)) == 0) return FALSE;
     _xsetbv(0, requested);
     return TRUE;
 }

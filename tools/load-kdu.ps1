@@ -20,10 +20,11 @@
 .EXAMPLE
     .\tools\load-kdu.ps1
     .\tools\load-kdu.ps1 -Config Debug -Provider 1
+    .\tools\load-kdu.ps1 -Config Benchmark
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Release', 'Debug')]
+    [ValidateSet('Release', 'Debug', 'Benchmark')]
     [string] $Config = 'Release',
 
     [string] $ServiceName = 'JohnSmith',

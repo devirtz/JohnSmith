@@ -197,6 +197,11 @@ AmdAsmStop(
     _In_ ULONG64 StopCookie
     );
 
+VOID
+AmdAsmSlatRendezvous(
+    VOID
+    );
+
 USHORT AmdAsmReadEs(VOID);
 USHORT AmdAsmReadCs(VOID);
 USHORT AmdAsmReadSs(VOID);

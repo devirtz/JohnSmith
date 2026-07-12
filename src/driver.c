@@ -1,3 +1,5 @@
+#include <ntifs.h>
+
 #include "hv.h"
 #include "hv_log.h"
 
@@ -51,7 +53,9 @@ JohnSmithQueryDword(
 
     RtlInitUnicodeString(&name, ValueName);
     status = JohnSmithOpenServiceKey(KEY_QUERY_VALUE, &keyHandle);
-    if (!NT_SUCCESS(status)) return status;
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
 
     status = ZwQueryValueKey(
         keyHandle,
@@ -140,7 +144,9 @@ JohnSmithStartWorker(
             : JOHNSMITH_START_FAILED;
     } else {
         g_Hypervisor = NULL;
-        if (NT_SUCCESS(status)) status = STATUS_CANCELLED;
+        if (NT_SUCCESS(status)) {
+            status = STATUS_CANCELLED;
+        }
         state = InterlockedCompareExchange(&g_StopRequested, 0, 0) != 0
             ? JOHNSMITH_START_CANCELLED
             : JOHNSMITH_START_FAILED;
@@ -234,13 +240,24 @@ DriverEntry(
             KernelMode,
             (PVOID*)&g_StartThread,
             NULL);
-        ZwClose(threadHandle);
         if (!NT_SUCCESS(status)) {
-            /* Keep the image resident until the already-created thread exits. */
+            NTSTATUS referenceStatus = status;
+            NTSTATUS waitStatus;
+
             InterlockedExchange(&g_StopRequested, 1);
+            waitStatus = ZwWaitForSingleObject(
+                threadHandle, FALSE, NULL);
+            ZwClose(threadHandle);
+            if (!NT_SUCCESS(waitStatus)) {
+                /* The image must remain resident if thread exit is unknown. */
+                DriverObject->DriverUnload = NULL;
+                return STATUS_SUCCESS;
+            }
+            JohnSmithFreeRegistryPath();
             DriverObject->DriverUnload = NULL;
-            return STATUS_SUCCESS;
+            return referenceStatus;
         }
+        ZwClose(threadHandle);
         InterlockedExchange(&g_StartWorkerQueued, 1);
         return STATUS_SUCCESS;
     }

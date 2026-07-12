@@ -76,11 +76,11 @@ HvGetCurrentCpu(
     _In_ HV_IPI_CONTEXT* Context
     )
 {
-    PROCESSOR_NUMBER processor_number;
+    PROCESSOR_NUMBER processorNumber;
     ULONG index;
 
-    KeGetCurrentProcessorNumberEx(&processor_number);
-    index = KeGetProcessorIndexFromNumber(&processor_number);
+    KeGetCurrentProcessorNumberEx(&processorNumber);
+    index = KeGetProcessorIndexFromNumber(&processorNumber);
     if (index == INVALID_PROCESSOR_INDEX || index >= Context->State->CpuCount) {
         InterlockedExchange(&Context->Failure, TRUE);
         return NULL;
@@ -139,20 +139,20 @@ HvStopProcessor(
 {
     HV_IPI_CONTEXT* context = (HV_IPI_CONTEXT*)Argument;
     HV_CPU* cpu = HvGetCurrentCpu(context);
-    LONG cpu_state;
+    LONG cpuState;
     NTSTATUS status;
 
     if (cpu == NULL) {
         return 0;
     }
 
-    cpu_state = InterlockedCompareExchange(&cpu->State, 0, 0);
-    if (cpu_state == HV_CPU_PREPARED) {
+    cpuState = InterlockedCompareExchange(&cpu->State, 0, 0);
+    if (cpuState == HV_CPU_PREPARED) {
         cpu->Status = STATUS_SUCCESS;
         return 0;
     }
 
-    if (cpu_state != HV_CPU_RUNNING && cpu_state != HV_CPU_START_FAILED) {
+    if (cpuState != HV_CPU_RUNNING && cpuState != HV_CPU_START_FAILED) {
         cpu->Status = STATUS_INVALID_DEVICE_STATE;
         InterlockedExchange(&context->Failure, TRUE);
         return 0;
@@ -295,11 +295,11 @@ HvStart(
 {
     const HV_BACKEND_OPS* backend;
     HV_CPU* cpu;
-    ULONG prepared_count = 0;
-    ULONG cpu_count;
+    ULONG preparedCount = 0;
+    ULONG cpuCount;
     NTSTATUS status;
-    NTSTATUS cleanup_status;
-    SIZE_T allocation_size;
+    NTSTATUS cleanupStatus;
+    SIZE_T allocationSize;
 
     if (State == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -334,25 +334,25 @@ HvStart(
     }
     HV_LOG_INFO("selected backend: %s.\n", backend->Name);
 
-    cpu_count = KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
-    if (cpu_count == 0 || cpu_count > MAXULONG / sizeof(HV_CPU)) {
+    cpuCount = KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
+    if (cpuCount == 0 || cpuCount > MAXULONG / sizeof(HV_CPU)) {
         status = STATUS_INVALID_DEVICE_STATE;
         goto FailLifecycle;
     }
 
-    allocation_size = (SIZE_T)cpu_count * sizeof(HV_CPU);
+    allocationSize = (SIZE_T)cpuCount * sizeof(HV_CPU);
     HvGlobalState.Cpus = (HV_CPU*)ExAllocatePool2(
         POOL_FLAG_NON_PAGED,
-        allocation_size,
+        allocationSize,
         HV_POOL_TAG_CPU_ARRAY);
     if (HvGlobalState.Cpus == NULL) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto FailLifecycle;
     }
-    RtlZeroMemory(HvGlobalState.Cpus, allocation_size);
+    RtlZeroMemory(HvGlobalState.Cpus, allocationSize);
 
     HvGlobalState.Backend = backend;
-    HvGlobalState.CpuCount = cpu_count;
+    HvGlobalState.CpuCount = cpuCount;
 
     status = backend->Prepare(&HvGlobalState);
     if (!NT_SUCCESS(status)) {
@@ -360,9 +360,9 @@ HvStart(
         goto FailArray;
     }
 
-    for (prepared_count = 0; prepared_count < cpu_count; ++prepared_count) {
-        cpu = &HvGlobalState.Cpus[prepared_count];
-        cpu->ProcessorIndex = prepared_count;
+    for (preparedCount = 0; preparedCount < cpuCount; ++preparedCount) {
+        cpu = &HvGlobalState.Cpus[preparedCount];
+        cpu->ProcessorIndex = preparedCount;
         cpu->Status = STATUS_SUCCESS;
         InterlockedExchange(&cpu->State, HV_CPU_PREPARING);
 
@@ -391,16 +391,16 @@ HvStart(
 
     InterlockedExchange(&HvGlobalState.Lifecycle, HV_LIFECYCLE_RUNNING);
     *State = &HvGlobalState;
-    HvLogStartBanner(backend->Name, cpu_count);
+    HvLogStartBanner(backend->Name, cpuCount);
     return STATUS_SUCCESS;
 
 FailIntrospection:
-    cleanup_status = HvIntrospectionStop(&HvGlobalState);
-    if (!NT_SUCCESS(cleanup_status)) {
+    cleanupStatus = HvIntrospectionStop(&HvGlobalState);
+    if (!NT_SUCCESS(cleanupStatus)) {
         HvFailStop(&HvGlobalState, HV_FAIL_STOP_ROLLBACK);
     }
 FailPreparedCpus:
-    HvReleaseCpus(&HvGlobalState, prepared_count);
+    HvReleaseCpus(&HvGlobalState, preparedCount);
     backend->Free(&HvGlobalState);
 FailArray:
     ExFreePoolWithTag(HvGlobalState.Cpus, HV_POOL_TAG_CPU_ARRAY);

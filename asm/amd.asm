@@ -6,6 +6,7 @@ HV_MAGIC_RAX EQU 031504F5453564E45h
 HV_MAGIC_RCX EQU 0C0DEC0DE4E41454Ch
 HV_MAGIC_RDX EQU 053544F504F4E4C59h
 HV_MAGIC_R8  EQU 0A55A5AA5F00DCAFEh
+HV_SLAT_R9   EQU 0534C4154464C5553h
 
 VMCB_RIP_OFFSET EQU 0578h
 VMCB_RSP_OFFSET EQU 05D8h
@@ -168,6 +169,16 @@ AmdAsmStop PROC
     vmmcall
     ret
 AmdAsmStop ENDP
+
+AmdAsmSlatRendezvous PROC
+    mov r9,  HV_SLAT_R9
+    mov rax, HV_MAGIC_RAX
+    mov rcx, HV_MAGIC_RCX
+    mov rdx, HV_MAGIC_RDX
+    mov r8,  HV_MAGIC_R8
+    vmmcall
+    ret
+AmdAsmSlatRendezvous ENDP
 
 AmdAsmReadEs PROC
     xor eax, eax

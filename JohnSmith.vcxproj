@@ -9,6 +9,10 @@
       <Configuration>Release</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
+    <ProjectConfiguration Include="Benchmark|x64">
+      <Configuration>Benchmark</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{E36AEAC1-ECE8-4E4D-B755-D4575541EC8F}</ProjectGuid>
@@ -41,6 +45,17 @@
     <SignMode>Off</SignMode>
     <EnableTestSign>false</EnableTestSign>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Benchmark|x64'" Label="Configuration">
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <Driver_SpectreMitigation>false</Driver_SpectreMitigation>
+    <DisableKernelFlag>false</DisableKernelFlag>
+    <SignMode>Off</SignMode>
+    <EnableTestSign>false</EnableTestSign>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -53,6 +68,7 @@
     <TargetExt>.sys</TargetExt>
     <EnableInf2Cat>false</EnableInf2Cat>
     <SupportsPackaging>false</SupportsPackaging>
+    <JohnSmithVmexitBenchmark Condition="'$(JohnSmithVmexitBenchmark)'=='' and '$(Configuration)'=='Benchmark'">1</JohnSmithVmexitBenchmark>
     <JohnSmithVmexitBenchmark Condition="'$(JohnSmithVmexitBenchmark)'==''">0</JohnSmithVmexitBenchmark>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -93,7 +109,28 @@
       <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
     </DriverSign>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Benchmark|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <WarningLevel>Level4</WarningLevel>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <BufferSecurityCheck>true</BufferSecurityCheck>
+      <SDLCheck>true</SDLCheck>
+      <ControlFlowGuard>Guard</ControlFlowGuard>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+    </ClCompile>
+    <MASM>
+      <IncludePaths>$(ProjectDir)include;%(IncludePaths)</IncludePaths>
+      <PreprocessorDefinitions>JOHNSMITH_VMEXIT_BENCHMARK=$(JohnSmithVmexitBenchmark);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </MASM>
+    <DriverSign>
+      <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
+    </DriverSign>
+  </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\common\x86_common.c" />
     <ClCompile Include="src\driver.c" />
     <ClCompile Include="src\hv.c" />
     <ClCompile Include="src\log.c" />
@@ -110,6 +147,7 @@
   <ItemGroup>
     <ClInclude Include="include\hv.h" />
     <ClInclude Include="include\hv_log.h" />
+    <ClInclude Include="src\common\x86_common.h" />
     <ClInclude Include="include\intel.h" />
     <ClInclude Include="src\intel\intel_internal.h" />
     <ClInclude Include="include\amd.h" />

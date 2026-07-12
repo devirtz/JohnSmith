@@ -1,4 +1,5 @@
 #include "intel_internal.h"
+#include "../common/x86_common.h"
 
 VOID
 IntelFlushEptIfNeeded(
@@ -11,16 +12,22 @@ IntelFlushEptIfNeeded(
     INTEL_INVALIDATION_DESCRIPTOR descriptor;
     ULONG type;
 
-    if (backend == NULL) return;
+    if (backend == NULL) {
+        return;
+    }
     generation = InterlockedCompareExchange64(
         &backend->SlatGeneration, 0, 0);
-    if (Context->SlatGeneration == generation) return;
+    if (Context->SlatGeneration == generation) {
+        return;
+    }
 
     descriptor.Context = Context->EptPointer;
     descriptor.Reserved = 0;
     type = (backend->EptVpidCapabilities & (1ull << 25)) != 0
         ? INVEPT_SINGLE_CONTEXT : INVEPT_ALL_CONTEXTS;
-    if (type == INVEPT_ALL_CONTEXTS) descriptor.Context = 0;
+    if (type == INVEPT_ALL_CONTEXTS) {
+        descriptor.Context = 0;
+    }
     if (IntelAsmInvept(type, &descriptor) != 0) {
         KeBugCheckEx(HYPERVISOR_ERROR, INTEL_BUGCHECK_INVALIDATION,
             type, Context->EptPointer, generation);
@@ -105,62 +112,6 @@ IntelAllocatePage(
     return page;
 }
 
-static BOOLEAN
-IntelRangeIsRam(
-    _In_opt_ PPHYSICAL_MEMORY_RANGE Ranges,
-    _In_ ULONG64 Base,
-    _In_ ULONG64 Size
-    )
-{
-    ULONG index;
-
-    if (Ranges == NULL || Base > MAXULONGLONG - Size) {
-        return FALSE;
-    }
-
-    for (index = 0; Ranges[index].NumberOfBytes.QuadPart != 0; ++index) {
-        ULONG64 rangeBase = (ULONG64)Ranges[index].BaseAddress.QuadPart;
-        ULONG64 rangeSize = (ULONG64)Ranges[index].NumberOfBytes.QuadPart;
-
-        if (Base >= rangeBase &&
-            Base - rangeBase <= rangeSize &&
-            Size <= rangeSize - (Base - rangeBase)) {
-            return TRUE;
-        }
-    }
-
-    return FALSE;
-}
-
-static BOOLEAN
-IntelRangeIntersectsRam(
-    _In_ PPHYSICAL_MEMORY_RANGE Ranges,
-    _In_ ULONG64 Base,
-    _In_ ULONG64 Size
-    )
-{
-    ULONG index;
-    ULONG64 end;
-
-    if (Ranges == NULL || Size == 0 || Base > MAXULONGLONG - Size) {
-        return FALSE;
-    }
-    end = Base + Size;
-
-    for (index = 0; Ranges[index].NumberOfBytes.QuadPart != 0; ++index) {
-        ULONG64 rangeBase = (ULONG64)Ranges[index].BaseAddress.QuadPart;
-        ULONG64 rangeSize = (ULONG64)Ranges[index].NumberOfBytes.QuadPart;
-        ULONG64 rangeEnd = rangeBase > MAXULONGLONG - rangeSize
-            ? MAXULONGLONG : rangeBase + rangeSize;
-
-        if (Base < rangeEnd && rangeBase < end) {
-            return TRUE;
-        }
-    }
-
-    return FALSE;
-}
-
 static NTSTATUS
 IntelCreateMixedMapping(
     _Inout_ INTEL_BACKEND_CONTEXT* Context,
@@ -191,7 +142,7 @@ IntelCreateMixedMapping(
     for (index = 0; index < 512; ++index) {
         ULONG64 pageAddress = PhysicalAddress +
                               ((ULONG64)index << PAGE_SHIFT);
-        ULONG64 memoryType = IntelRangeIsRam(
+        ULONG64 memoryType = HvX86RangeIsRam(
             Ranges, pageAddress, PAGE_SIZE) ? EPT_MEMORY_TYPE_WB : 0;
 
         pt[index] = (pageAddress & EPT_ADDRESS_MASK) |
@@ -207,31 +158,6 @@ IntelCreateMixedMapping(
     return STATUS_SUCCESS;
 }
 
-static ULONG64
-IntelPhysicalLimit(
-    VOID
-    )
-{
-    int registers[4];
-    ULONG bits;
-    ULONG64 limit;
-
-    __cpuid(registers, 0x80000000);
-    if ((ULONG)registers[0] < 0x80000008u) {
-        return 1ull << 36;
-    }
-
-    __cpuid(registers, 0x80000008);
-    bits = (ULONG)registers[0] & 0xffu;
-    if (bits >= 63) {
-        limit = MAXLONGLONG;
-    } else {
-        limit = 1ull << bits;
-    }
-
-    return min(limit, HV_SLAT_MAXIMUM_ADDRESS);
-}
-
 NTSTATUS
 IntelBuildEpt(
     _Inout_ INTEL_BACKEND_CONTEXT* Context
@@ -244,7 +170,7 @@ IntelBuildEpt(
     ULONG64* pml4;
     ULONG64* pdpt;
 
-    Context->MapLimit = IntelPhysicalLimit();
+    Context->MapLimit = HvX86GetSlatMapLimit();
     if (Context->MapLimit < (1ull << 32)) {
         return STATUS_HV_FEATURE_UNAVAILABLE;
     }
@@ -289,13 +215,13 @@ IntelBuildEpt(
             if (physical >= Context->MapLimit) {
                 break;
             }
-            if (IntelRangeIsRam(ranges, physical, 1ull << 21)) {
+            if (HvX86RangeIsRam(ranges, physical, 1ull << 21)) {
                 pd[pdIndex] = (physical & EPT_2MB_ADDRESS_MASK) |
                               EPT_ACCESS_MASK |
                               EPT_LARGE_PAGE |
                               (EPT_MEMORY_TYPE_WB <<
                                EPT_MEMORY_TYPE_SHIFT);
-            } else if (IntelRangeIntersectsRam(
+            } else if (HvX86RangeIntersectsRam(
                            ranges, physical, 1ull << 21)) {
                 status = IntelCreateMixedMapping(
                     Context, ranges, pdptIndex, pdIndex,

@@ -27,12 +27,10 @@
 #define AMD_SVM_FEATURE_NRIPS           (1u << 3)
 #define AMD_SVM_FEATURE_FLUSH_BY_ASID   (1u << 6)
 
-#define AMD_INTERCEPT_CPUID             (1u << 18)
 #define AMD_INTERCEPT_INVLPGA           (1u << 26)
 #define AMD_INTERCEPT_MSR               (1u << 28)
 #define AMD_INTERCEPT_SVM_INSTRUCTIONS  0x7fu
 #define AMD_INTERCEPT_XSETBV            (1u << 13)
-#define AMD_EXIT_CPUID                  0x72ull
 #define AMD_EXIT_INVLPGA                0x7Aull
 #define AMD_EXIT_VMRUN                  0x80ull
 #define AMD_EXIT_VMMCALL                0x81ull
