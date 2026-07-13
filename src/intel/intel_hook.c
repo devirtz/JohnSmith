@@ -2,8 +2,45 @@
 
 static INTEL_HOOK_POLICY g_HookTable[INTEL_HOOK_TABLE_CAPACITY];
 
+static LONG64
+IntelHookReadSequence(
+    _In_ const INTEL_HOOK_POLICY* Policy
+    )
+{
+    return InterlockedCompareExchange64(
+        (volatile LONG64*)&Policy->Sequence, 0, 0);
+}
+
+/* Caller holds the backend hook lock exclusively. */
+static VOID
+IntelHookBeginUpdate(
+    _Inout_ INTEL_HOOK_POLICY* Policy
+    )
+{
+    LONG64 sequence = InterlockedIncrement64(&Policy->Sequence);
+    NT_ASSERT((sequence & 1) != 0);
+    UNREFERENCED_PARAMETER(sequence);
+    KeMemoryBarrier();
+}
+
+/* Caller holds the backend hook lock exclusively. */
+static VOID
+IntelHookEndUpdate(
+    _Inout_ INTEL_HOOK_POLICY* Policy
+    )
+{
+    LONG64 sequence;
+
+    KeMemoryBarrier();
+    sequence = InterlockedIncrement64(&Policy->Sequence);
+    NT_ASSERT((sequence & 1) == 0);
+    UNREFERENCED_PARAMETER(sequence);
+}
+
+_Success_(return != FALSE)
 BOOLEAN
 IntelHookLookup(
+    _In_ const INTEL_BACKEND_CONTEXT* Backend,
     _In_ ULONG64 GuestPhysicalAddress,
     _Out_ INTEL_HOOK_POLICY* Out
     )
@@ -11,19 +48,30 @@ IntelHookLookup(
     ULONG64 target;
     ULONG index;
 
+    if (Out == NULL) {
+        return FALSE;
+    }
     RtlZeroMemory(Out, sizeof(*Out));
+
+    if (Backend == NULL ||
+        InterlockedCompareExchange(
+            (volatile LONG*)&Backend->ForcePrimaryEpt, 0, 0) != 0) {
+        return FALSE;
+    }
 
     target = GuestPhysicalAddress & ~((ULONG64)PAGE_SIZE - 1);
 
     for (index = 0; index < INTEL_HOOK_TABLE_CAPACITY; ++index) {
+        LONG64 firstSequence = IntelHookReadSequence(&g_HookTable[index]);
         ULONG64 slotGpa = (ULONG64)InterlockedCompareExchange64(
             (volatile LONG64*)&g_HookTable[index].GuestPhysicalAddress,
             0, 0);
 
-        if (slotGpa == 0 || slotGpa != target) {
+        if ((firstSequence & 1) != 0 || slotGpa == 0 || slotGpa != target) {
             continue;
         }
 
+        Out->Sequence = firstSequence;
         Out->GuestPhysicalAddress = slotGpa;
         Out->ShadowHostPhysicalAddress =
             g_HookTable[index].ShadowHostPhysicalAddress;
@@ -32,7 +80,13 @@ IntelHookLookup(
         Out->OriginalSecondaryPte = g_HookTable[index].OriginalSecondaryPte;
         Out->Kind = g_HookTable[index].Kind;
         Out->Cookie = g_HookTable[index].Cookie;
-        return Out->Kind != INTEL_HOOK_KIND_NONE;
+        KeMemoryBarrier();
+        if (firstSequence == IntelHookReadSequence(&g_HookTable[index]) &&
+            InterlockedCompareExchange(
+                (volatile LONG*)&Backend->ForcePrimaryEpt, 0, 0) == 0) {
+            return Out->Kind != INTEL_HOOK_KIND_NONE;
+        }
+        RtlZeroMemory(Out, sizeof(*Out));
     }
     return FALSE;
 }
@@ -43,6 +97,21 @@ IntelHookResetTable(
     )
 {
     RtlZeroMemory(g_HookTable, sizeof(g_HookTable));
+}
+
+VOID
+IntelHookTeardown(
+    VOID
+    )
+{
+    ULONG index;
+
+    for (index = 0; index < INTEL_HOOK_TABLE_CAPACITY; ++index) {
+        if (g_HookTable[index].ShadowVirtual != NULL) {
+            MmFreeContiguousMemory(g_HookTable[index].ShadowVirtual);
+        }
+    }
+    IntelHookResetTable();
 }
 
 NTSTATUS
@@ -56,22 +125,29 @@ IntelHookQuery(
     _Out_ ULONG64* ShadowHostPhysicalAddress
     )
 {
+    INTEL_BACKEND_CONTEXT* backend;
     ULONG64 slotGpa;
 
-    UNREFERENCED_PARAMETER(State);
     *Valid = 0;
     *Kind = 0;
     *Cookie = 0;
     *GuestPhysicalAddress = 0;
     *ShadowHostPhysicalAddress = 0;
 
-    if (HookId >= INTEL_HOOK_TABLE_CAPACITY) {
+    if (State == NULL || State->BackendContext == NULL ||
+        HookId >= INTEL_HOOK_TABLE_CAPACITY) {
         return STATUS_INVALID_PARAMETER;
     }
+
+    backend = (INTEL_BACKEND_CONTEXT*)State->BackendContext;
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&backend->HookLock);
 
     slotGpa = (ULONG64)InterlockedCompareExchange64(
         (volatile LONG64*)&g_HookTable[HookId].GuestPhysicalAddress, 0, 0);
     if (slotGpa == 0) {
+        ExReleasePushLockShared(&backend->HookLock);
+        KeLeaveCriticalRegion();
         return STATUS_SUCCESS;
     }
     *Valid = 1;
@@ -80,6 +156,8 @@ IntelHookQuery(
     *GuestPhysicalAddress = slotGpa;
     *ShadowHostPhysicalAddress =
         g_HookTable[HookId].ShadowHostPhysicalAddress;
+    ExReleasePushLockShared(&backend->HookLock);
+    KeLeaveCriticalRegion();
     return STATUS_SUCCESS;
 }
 
@@ -130,9 +208,27 @@ IntelHookFindFreeSlot(
     return INTEL_HOOK_TABLE_CAPACITY;
 }
 
+/* Caller holds the backend hook lock exclusively. */
+static BOOLEAN
+IntelHookGpaExists(
+    _In_ ULONG64 GuestPhysicalAddress
+    )
+{
+    ULONG index;
+
+    for (index = 0; index < INTEL_HOOK_TABLE_CAPACITY; ++index) {
+        if ((ULONG64)InterlockedCompareExchange64(
+                (volatile LONG64*)&g_HookTable[index].GuestPhysicalAddress,
+                0, 0) == GuestPhysicalAddress) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 static NTSTATUS
 IntelHookBuildShadow(
-    _In_ ULONG64 GuestPhysicalAddress,
+    _In_ ULONG64 HostPhysicalAddress,
     _In_reads_bytes_(PatchSize) const VOID* PatchBytes,
     _In_ ULONG PatchOffset,
     _In_ ULONG PatchSize,
@@ -152,7 +248,7 @@ IntelHookBuildShadow(
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    originalPhysical.QuadPart = (LONGLONG)(GuestPhysicalAddress &
+    originalPhysical.QuadPart = (LONGLONG)(HostPhysicalAddress &
                                            ~((ULONG64)PAGE_SIZE - 1));
     originalMapping = MmMapIoSpaceEx(
         originalPhysical, PAGE_SIZE, PAGE_READWRITE);
@@ -197,6 +293,7 @@ IntelHookInstall(
     BOOLEAN backendLockHeld = FALSE;
     BOOLEAN primaryLocked = FALSE;
     BOOLEAN secondaryLocked = FALSE;
+    BOOLEAN mutationOwned = FALSE;
 
     if (State == NULL || HookId == NULL || PatchBytes == NULL ||
         PatchSize == 0 || State->BackendContext == NULL) {
@@ -226,21 +323,26 @@ IntelHookInstall(
     ExAcquirePushLockExclusive(&backend->HookLock);
     backendLockHeld = TRUE;
 
+    if (InterlockedCompareExchange(
+            &backend->HookMutationActive, 1, 0) != 0) {
+        status = STATUS_DEVICE_BUSY;
+        goto Exit;
+    }
+    mutationOwned = TRUE;
+
     status = IntelHookEnsureSecondaryRoot(backend);
     if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+
+    if (IntelHookGpaExists(alignedGpa)) {
+        status = STATUS_OBJECT_NAME_COLLISION;
         goto Exit;
     }
 
     slot = IntelHookFindFreeSlot();
     if (slot == INTEL_HOOK_TABLE_CAPACITY) {
         status = STATUS_INSUFFICIENT_RESOURCES;
-        goto Exit;
-    }
-
-    status = IntelHookBuildShadow(
-        alignedGpa, PatchBytes, PatchOffset, PatchSize,
-        &shadowVirtual, &shadowPhysical);
-    if (!NT_SUCCESS(status)) {
         goto Exit;
     }
 
@@ -263,6 +365,14 @@ IntelHookInstall(
     originalPrimary = primaryPt[primaryPtIndex];
     originalSecondary = secondaryPt[secondaryPtIndex];
 
+    status = IntelHookBuildShadow(
+        originalPrimary & EPT_ADDRESS_MASK,
+        PatchBytes, PatchOffset, PatchSize,
+        &shadowVirtual, &shadowPhysical);
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+
     InterlockedExchange64(
         (volatile LONG64*)&primaryPt[primaryPtIndex],
         (LONG64)((originalPrimary & ~EPT_ACCESS_MASK) |
@@ -275,6 +385,7 @@ IntelHookInstall(
 
     KeMemoryBarrier();
 
+    IntelHookBeginUpdate(&g_HookTable[slot]);
     g_HookTable[slot].ShadowHostPhysicalAddress = shadowPhysical;
     g_HookTable[slot].ShadowVirtual = shadowVirtual;
     g_HookTable[slot].OriginalPrimaryPte = originalPrimary;
@@ -285,6 +396,7 @@ IntelHookInstall(
     InterlockedExchange64(
         (volatile LONG64*)&g_HookTable[slot].GuestPhysicalAddress,
         (LONG64)alignedGpa);
+    IntelHookEndUpdate(&g_HookTable[slot]);
 
     IntelHookReleasePt(backend->HookRoot);
     secondaryLocked = FALSE;
@@ -296,6 +408,7 @@ IntelHookInstall(
     backendLockHeld = FALSE;
 
     IntelHookInvalidateEverywhere(State, backend);
+    InterlockedExchange(&backend->HookMutationActive, 0);
 
     *HookId = slot;
     return STATUS_SUCCESS;
@@ -313,6 +426,9 @@ Exit:
     if (backendLockHeld) {
         ExReleasePushLockExclusive(&backend->HookLock);
         KeLeaveCriticalRegion();
+    }
+    if (mutationOwned) {
+        InterlockedExchange(&backend->HookMutationActive, 0);
     }
     return status;
 }
@@ -334,6 +450,8 @@ IntelHookRemove(
     ULONG64 originalSecondary;
     PVOID shadowVirtual;
     NTSTATUS status;
+    BOOLEAN primaryLocked = FALSE;
+    BOOLEAN secondaryLocked = FALSE;
 
     if (State == NULL || State->BackendContext == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -349,9 +467,17 @@ IntelHookRemove(
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&backend->HookLock);
 
+    if (InterlockedCompareExchange(
+            &backend->HookMutationActive, 1, 0) != 0) {
+        ExReleasePushLockExclusive(&backend->HookLock);
+        KeLeaveCriticalRegion();
+        return STATUS_DEVICE_BUSY;
+    }
+
     alignedGpa = (ULONG64)InterlockedCompareExchange64(
         (volatile LONG64*)&g_HookTable[HookId].GuestPhysicalAddress, 0, 0);
     if (alignedGpa == 0) {
+        InterlockedExchange(&backend->HookMutationActive, 0);
         ExReleasePushLockExclusive(&backend->HookLock);
         KeLeaveCriticalRegion();
         return STATUS_NOT_FOUND;
@@ -361,9 +487,50 @@ IntelHookRemove(
     originalSecondary = g_HookTable[HookId].OriginalSecondaryPte;
     shadowVirtual = g_HookTable[HookId].ShadowVirtual;
 
+    IntelHookBeginUpdate(&g_HookTable[HookId]);
     InterlockedExchange64(
         (volatile LONG64*)&g_HookTable[HookId].GuestPhysicalAddress, 0);
-    KeMemoryBarrier();
+    IntelHookEndUpdate(&g_HookTable[HookId]);
+
+    ExReleasePushLockExclusive(&backend->HookLock);
+    KeLeaveCriticalRegion();
+
+    IntelHookRetireSecondaryViews(State, backend);
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&backend->HookLock);
+
+    status = IntelHookAcquirePt(
+        &backend->PrimaryRoot, backend->MapLimit, alignedGpa,
+        INTEL_SPLIT_REASON_HOOK, &primaryPt, &primaryPtIndex);
+    if (!NT_SUCCESS(status)) {
+        goto Republish;
+    }
+    primaryLocked = TRUE;
+
+    if (backend->HookRoot == NULL) {
+        status = STATUS_INVALID_DEVICE_STATE;
+        goto Republish;
+    }
+    status = IntelHookAcquirePt(
+        backend->HookRoot, backend->MapLimit, alignedGpa,
+        INTEL_SPLIT_REASON_HOOK, &secondaryPt, &secondaryPtIndex);
+    if (!NT_SUCCESS(status)) {
+        goto Republish;
+    }
+    secondaryLocked = TRUE;
+
+    InterlockedExchange64(
+        (volatile LONG64*)&primaryPt[primaryPtIndex],
+        (LONG64)originalPrimary);
+    InterlockedExchange64(
+        (volatile LONG64*)&secondaryPt[secondaryPtIndex],
+        (LONG64)originalSecondary);
+
+    IntelHookReleasePt(backend->HookRoot);
+    secondaryLocked = FALSE;
+    IntelHookReleasePt(&backend->PrimaryRoot);
+    primaryLocked = FALSE;
 
     ExReleasePushLockExclusive(&backend->HookLock);
     KeLeaveCriticalRegion();
@@ -373,42 +540,40 @@ IntelHookRemove(
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&backend->HookLock);
 
-    status = IntelHookAcquirePt(
-        &backend->PrimaryRoot, backend->MapLimit, alignedGpa,
-        INTEL_SPLIT_REASON_HOOK, &primaryPt, &primaryPtIndex);
-    if (NT_SUCCESS(status)) {
-        InterlockedExchange64(
-            (volatile LONG64*)&primaryPt[primaryPtIndex],
-            (LONG64)originalPrimary);
-        IntelHookReleasePt(&backend->PrimaryRoot);
-    }
-
-    if (backend->HookRoot != NULL) {
-        status = IntelHookAcquirePt(
-            backend->HookRoot, backend->MapLimit, alignedGpa,
-            INTEL_SPLIT_REASON_HOOK, &secondaryPt, &secondaryPtIndex);
-        if (NT_SUCCESS(status)) {
-            InterlockedExchange64(
-                (volatile LONG64*)&secondaryPt[secondaryPtIndex],
-                (LONG64)originalSecondary);
-            IntelHookReleasePt(backend->HookRoot);
-        }
-    }
-
+    IntelHookBeginUpdate(&g_HookTable[HookId]);
     g_HookTable[HookId].ShadowHostPhysicalAddress = 0;
     g_HookTable[HookId].ShadowVirtual = NULL;
     g_HookTable[HookId].OriginalPrimaryPte = 0;
     g_HookTable[HookId].OriginalSecondaryPte = 0;
     g_HookTable[HookId].Kind = INTEL_HOOK_KIND_NONE;
     g_HookTable[HookId].Cookie = 0;
+    IntelHookEndUpdate(&g_HookTable[HookId]);
+    InterlockedExchange(&backend->HookMutationActive, 0);
 
     ExReleasePushLockExclusive(&backend->HookLock);
     KeLeaveCriticalRegion();
-
-    IntelHookInvalidateEverywhere(State, backend);
+    IntelHookAllowSecondaryViews(backend);
 
     if (shadowVirtual != NULL) {
         MmFreeContiguousMemory(shadowVirtual);
     }
     return STATUS_SUCCESS;
+
+Republish:
+    if (secondaryLocked) {
+        IntelHookReleasePt(backend->HookRoot);
+    }
+    if (primaryLocked) {
+        IntelHookReleasePt(&backend->PrimaryRoot);
+    }
+    IntelHookBeginUpdate(&g_HookTable[HookId]);
+    InterlockedExchange64(
+        (volatile LONG64*)&g_HookTable[HookId].GuestPhysicalAddress,
+        (LONG64)alignedGpa);
+    IntelHookEndUpdate(&g_HookTable[HookId]);
+    InterlockedExchange(&backend->HookMutationActive, 0);
+    ExReleasePushLockExclusive(&backend->HookLock);
+    KeLeaveCriticalRegion();
+    IntelHookAllowSecondaryViews(backend);
+    return status;
 }

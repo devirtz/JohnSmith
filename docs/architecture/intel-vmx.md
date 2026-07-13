@@ -113,6 +113,13 @@ RIP advancement follows Section 29.3.1.4:
 - otherwise truncate to EIP so the result wraps at 4 GiB;
 - never leave guest RIP bits 63:32 set for compatibility or legacy code.
 
+Interrupt-window and NMI-window injection are **not implemented features**.
+One-slot request/handler scaffold code remains in `intel_exit.c` and
+`intel.h`, but it has no producer. In particular, the NMI request path must not
+be called: it can enable NMI-window exiting without enabling NMI exiting and
+virtual NMIs. See the audited status and removal/rework requirement in
+[`../implementation-status.md`](../implementation-status.md).
+
 ## Control-register emulation
 
 CR0 and CR4 writes combine guest-visible values with VMX fixed-bit constraints.
@@ -153,12 +160,15 @@ policy and per-vCPU CR2 virtualization in place.
 
 ### Dual-EPT hook views
 
+> [!CAUTION]
+> The source-level lifecycle is implemented, but the capability has no committed
+> bare-metal or concurrency-test evidence.
+
 Hook installation attaches a second `INTEL_EPT_ROOT` (`HookRoot`) to the
 backend, allocated lazily on the first install and freed at backend teardown.
-The hook root is a deep-copy identity mapping with R+W permissions on every
-RAM leaf; execute is stripped so that any instruction fetch inside the hook
-view that leaves the shadow page produces an EPT violation the hypervisor can
-steer back to the primary view.
+The hook root is a deep-copy mapping with R+W permissions. Uniform 2 MiB,
+mixed RAM/MMIO 4 KiB, and non-RAM mappings all honor that mask, keeping the
+secondary root non-executable outside installed shadow pages.
 
 For each installed hook:
 
@@ -193,6 +203,14 @@ writes `VMCS_EPT_POINTER`, updates the vCPU's cached `EptPointer`, resets its
 generation counter to force mismatch on the next check, and then invokes the
 same INVEPT path so the newly-loaded root sees no stale translations.
 
+Hook removal first unpublishes a versioned policy slot, forces and verifies all
+vCPUs on `PrimaryRoot`, reacquires both PTEs before changing either, restores
+both views, invalidates again, and only then frees the shadow. A reacquisition
+failure republishes the unchanged policy. Duplicate GPAs are rejected, live
+shadow pages are freed during backend teardown, and hook mutations are
+serialized. Hook-created 4 KiB splits remain allocated until backend teardown;
+focused runtime and concurrency tests are still required.
+
 ## MSR and nested-VMX policy
 
 The bitmap intercepts `IA32_FEATURE_CONTROL`, VMX capability MSRs, and the
@@ -214,12 +232,14 @@ the hot path.
 ## Control device
 
 `\Device\JohnSmith` and `\DosDevices\JohnSmith` provide a versioned IOCTL
-surface for offline inspection. The device ACL grants read/write access to
+surface. The device ACL grants read/write access to
 SYSTEM and BUILTIN\\Administrators only. `IOCTL_JOHNSMITH_STATUS` returns the
-lifecycle, backend name, prepared and running CPU counts, and the ABI version
-from `include/johnsmith_ioctl.h`. Hook and physical-memory IOCTLs are
-intentionally deferred until the multi-EPT-root refactor (Stage 4) is in
-place.
+lifecycle, backend name, CPU counts, and the ABI version from
+`include/johnsmith_ioctl.h`. Hook install/remove/query IOCTLs are wired to the
+Intel backend. Each handler holds rundown protection on the published
+hypervisor; unload blocks new requests and waits for in-flight requests before
+stop. HPA, GPA, GVA, translate, and other physical-memory IOCTLs are not
+implemented.
 
 ## Deliberate exclusions
 

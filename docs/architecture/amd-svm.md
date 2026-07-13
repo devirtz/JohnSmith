@@ -28,15 +28,15 @@ descriptor state. The backend enables:
 
 - nested paging;
 - MSR permission-map interception;
-- CPUID interception for the feature-hiding policy;
+- CPUID interception with native-result feature masking;
 - INVLPGA interception;
 - SVM-instruction interception;
 - XSETBV interception when XSAVE is present; requests currently receive `#GP` until guest XCR0 and host XCR0 are preserved separately.
 
-CPUID exits and is emulated with native results followed by the project policy:
-leaf 1 hides the hypervisor-present bit, leaf `0x80000001` hides SVM, and SVM
-capability leaf `0x8000000A` returns zero. Dynamic leaves still execute native
-CPUID for each request.
+The CPUID handler executes the requested native leaf/subleaf, clears hypervisor
+and VMX exposure from leaf 1, clears SVM from `0x80000001`, and zeros the SVM
+capability leaf `0x8000000A`. It advances to `NextRip` only after completing the
+emulation. AMD bare-metal validation remains required.
 
 I/O interception is disabled until the project owns an explicit port policy.
 An allocated all-zero IOPM would add state without changing behavior.
@@ -66,9 +66,8 @@ Valid guest ASIDs are `1..AsidCount-1`. Because each VMCB remains pinned to one
 logical processor, numeric ASIDs need not be globally unique.
 
 Live NPT changes increment a shared generation and execute an IPI rendezvous.
-CPUID cannot serve as that rendezvous because it is not intercepted. The
-callback therefore issues a private signature-gated CPL0 VMMCALL. The exit
-handler observes the generation before dispatch and selects:
+The callback uses a private signature-gated CPL0 VMMCALL rather than CPUID. The
+exit handler observes the generation before dispatch and selects:
 
 - `TLB_CONTROL=3` when flush-by-ASID is enumerated;
 - `TLB_CONTROL=1` otherwise.
@@ -92,7 +91,8 @@ The handler will not overwrite a valid pending injection. A collision between
 an event already selected for `EVENTINJ` and a new exception is a fail-stop
 condition.
 
-MSRPM policy virtualizes EFER, VM_CR, and VM_HSAVE_PA while rejecting unsupported
+CPUID policy hides hypervisor, VMX, and SVM exposure while retaining native
+topology and OS-dependent results. MSRPM policy virtualizes EFER, VM_CR, and VM_HSAVE_PA while rejecting unsupported
 intercepted accesses with `#GP`. VM_CR writes enforce reserved-bit and LOCK/SVMDIS
 semantics; VM_HSAVE_PA writes enforce alignment and physical-width constraints.
 Guest SVM instructions and INVLPGA receive `#UD`; nested SVM is not implemented.
@@ -116,7 +116,7 @@ enumeration, and processor errata.
 
 ## Deliberate exclusions
 
-- Nested SVM is hidden rather than virtualized.
+- Nested SVM instructions are rejected rather than virtualized.
 - I/O virtualization and a device model are absent.
 - AMD CET/SSP state virtualization is absent.
 - Recoverable NPF emulation and nested SVM are absent.

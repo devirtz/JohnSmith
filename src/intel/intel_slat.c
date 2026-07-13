@@ -15,6 +15,16 @@ IntelFlushEptIfNeeded(
     if (backend == NULL) {
         return;
     }
+    if (InterlockedCompareExchange(&backend->ForcePrimaryEpt, 0, 0) != 0 &&
+        Context->EptPointer != backend->PrimaryRoot.EptPointer) {
+        if (!NT_SUCCESS(IntelVmWrite(
+                VMCS_EPT_POINTER, backend->PrimaryRoot.EptPointer))) {
+            KeBugCheckEx(HYPERVISOR_ERROR, INTEL_BUGCHECK_INVALIDATION,
+                Context->EptPointer, backend->PrimaryRoot.EptPointer, 0);
+        }
+        Context->EptPointer = backend->PrimaryRoot.EptPointer;
+        Context->SlatGeneration = 0;
+    }
     generation = InterlockedCompareExchange64(
         &backend->SlatGeneration, 0, 0);
     if (Context->SlatGeneration == generation) {
@@ -68,6 +78,42 @@ IntelInvalidateRunningSlat(
                 cpuContext == NULL ? 0 : cpuContext->SlatGeneration);
         }
     }
+}
+
+VOID
+IntelHookRetireSecondaryViews(
+    _Inout_ HV_STATE* State,
+    _Inout_ INTEL_BACKEND_CONTEXT* Backend
+    )
+{
+    ULONG index;
+
+    InterlockedExchange(&Backend->ForcePrimaryEpt, TRUE);
+    if (InterlockedCompareExchange(&State->Lifecycle, 0, 0) !=
+        HV_LIFECYCLE_RUNNING) {
+        return;
+    }
+
+    IntelInvalidateRunningSlat(State, Backend);
+    for (index = 0; index < State->CpuCount; ++index) {
+        INTEL_CPU_CONTEXT* cpuContext =
+            (INTEL_CPU_CONTEXT*)State->Cpus[index].VendorContext;
+        if (cpuContext == NULL ||
+            cpuContext->EptPointer != Backend->PrimaryRoot.EptPointer) {
+            KeBugCheckEx(HYPERVISOR_ERROR, INTEL_BUGCHECK_INVALIDATION,
+                index,
+                Backend->PrimaryRoot.EptPointer,
+                cpuContext == NULL ? 0 : cpuContext->EptPointer);
+        }
+    }
+}
+
+VOID
+IntelHookAllowSecondaryViews(
+    _Inout_ INTEL_BACKEND_CONTEXT* Backend
+    )
+{
+    InterlockedExchange(&Backend->ForcePrimaryEpt, FALSE);
 }
 
 VOID
@@ -274,6 +320,7 @@ IntelCreateMixedMapping(
     _In_ ULONG PdptIndex,
     _In_ ULONG PdIndex,
     _In_ ULONG64 PhysicalAddress,
+    _In_ ULONG64 LeafAccessBits,
     _Out_ ULONG64* Entry
     )
 {
@@ -301,7 +348,7 @@ IntelCreateMixedMapping(
             Ranges, pageAddress, PAGE_SIZE) ? EPT_MEMORY_TYPE_WB : 0;
 
         pt[index] = (pageAddress & EPT_ADDRESS_MASK) |
-                    EPT_ACCESS_MASK |
+                    LeafAccessBits |
                     (memoryType << EPT_MEMORY_TYPE_SHIFT);
     }
 
@@ -384,7 +431,7 @@ IntelBuildIdentityRoot(
                            ranges, physical, 1ull << 21)) {
                 status = IntelCreateMixedMapping(
                     Root, ranges, pdptIndex, pdIndex,
-                    physical, &pd[pdIndex]);
+                    physical, leafAccessBits, &pd[pdIndex]);
                 if (!NT_SUCCESS(status)) {
                     ExFreePool(ranges);
                     return status;
@@ -466,7 +513,7 @@ IntelFreeEpt(
     IntelFreeRoot(&Context->PrimaryRoot);
     if (Context->HookRoot != NULL) {
         IntelFreeRoot(Context->HookRoot);
-        ExFreePoolWithTag(Context->HookRoot, HV_POOL_TAG_BACKEND);
+        ExFreePoolWithTag(Context->HookRoot, HV_POOL_TAG_HOOK);
         Context->HookRoot = NULL;
     }
 }
@@ -477,10 +524,17 @@ IntelSwitchActiveEptRoot(
     _In_ const INTEL_EPT_ROOT* Root
     )
 {
+    INTEL_BACKEND_CONTEXT* backend;
     NTSTATUS status;
 
     if (Context == NULL || Root == NULL || Root->EptPointer == 0) {
         return STATUS_INVALID_PARAMETER;
+    }
+    backend = (INTEL_BACKEND_CONTEXT*)Context->BackendContext;
+    if (backend != NULL &&
+        InterlockedCompareExchange(&backend->ForcePrimaryEpt, 0, 0) != 0 &&
+        Root->EptPointer != backend->PrimaryRoot.EptPointer) {
+        return STATUS_DEVICE_BUSY;
     }
     if (Root->EptPointer == Context->EptPointer) {
         return STATUS_SUCCESS;

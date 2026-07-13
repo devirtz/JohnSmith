@@ -16,7 +16,7 @@ JsDeviceTeardown(
     _In_ PDRIVER_OBJECT DriverObject
     );
 
-_IRQL_requires_max_(APC_LEVEL)
+_IRQL_requires_(PASSIVE_LEVEL)
 VOID
 JsDevicePublishHypervisor(
     _In_opt_ HV_STATE* State

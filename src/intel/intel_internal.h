@@ -308,6 +308,8 @@ typedef struct _INTEL_BACKEND_CONTEXT {
     INTEL_EPT_ROOT* HookRoot;
 
     EX_PUSH_LOCK HookLock;
+    volatile LONG HookMutationActive;
+    volatile LONG ForcePrimaryEpt;
     ULONG64 MapLimit;
     ULONG64 VmxBasic;
     ULONG64 EptVpidCapabilities;
@@ -459,6 +461,8 @@ typedef enum _INTEL_HOOK_KIND {
 } INTEL_HOOK_KIND;
 
 typedef struct _INTEL_HOOK_POLICY {
+    /* Even values describe stable snapshots; odd values mean mutation. */
+    volatile LONG64 Sequence;
     /* GPA of the hooked 4 KiB page (aligned).  Zero when the slot is
        unused.  Publication uses release semantics; readers must observe
        a nonzero value before reading any other field. */
@@ -508,8 +512,10 @@ IntelHookQuery(
     _Out_ ULONG64* ShadowHostPhysicalAddress
     );
 
+_Success_(return != FALSE)
 BOOLEAN
 IntelHookLookup(
+    _In_ const INTEL_BACKEND_CONTEXT* Backend,
     _In_ ULONG64 GuestPhysicalAddress,
     _Out_ INTEL_HOOK_POLICY* Out
     );
@@ -520,6 +526,11 @@ IntelHookLookup(
  */
 VOID
 IntelHookResetTable(
+    VOID
+    );
+
+VOID
+IntelHookTeardown(
     VOID
     );
 
@@ -552,6 +563,17 @@ IntelHookReleasePt(
 VOID
 IntelHookInvalidateEverywhere(
     _Inout_ HV_STATE* State,
+    _Inout_ INTEL_BACKEND_CONTEXT* Backend
+    );
+
+VOID
+IntelHookRetireSecondaryViews(
+    _Inout_ HV_STATE* State,
+    _Inout_ INTEL_BACKEND_CONTEXT* Backend
+    );
+
+VOID
+IntelHookAllowSecondaryViews(
     _Inout_ INTEL_BACKEND_CONTEXT* Backend
     );
 

@@ -9,11 +9,6 @@
 
 ## Build configurations
 
-```powershell
-msbuild JohnSmith.sln /m /t:Rebuild /p:Configuration=Debug /p:Platform=x64
-msbuild JohnSmith.sln /m /t:Rebuild /p:Configuration=Release /p:Platform=x64
-msbuild JohnSmith.sln /m /t:Rebuild /p:Configuration=Benchmark /p:Platform=x64
-```
 
 | Configuration | Diagnostics | CPUID fast path | VMCALL floor |
 | --- | --- | --- | --- |
@@ -21,12 +16,6 @@ msbuild JohnSmith.sln /m /t:Rebuild /p:Configuration=Benchmark /p:Platform=x64
 | Release | Disabled | Enabled | Disabled |
 | Benchmark | Disabled | Enabled | Enabled |
 
-Run WDK C/C++ analysis on Release:
-
-```powershell
-msbuild JohnSmith.vcxproj /m /t:Rebuild `
-  /p:Configuration=Release /p:Platform=x64 /p:RunCodeAnalysis=true
-```
 
 ## Load workflow
 
@@ -82,7 +71,7 @@ the handler.
 | All-CPU launch | Required | Required | No |
 | Rollback after injected failure | Required | Required | No |
 | Live SLAT permission change | INVEPT generation | VMMCALL/TLB_CONTROL generation | No |
-| CPUID policy | Masked/emulated | Native | No |
+| CPUID policy | Masked/emulated | Blocked: intercepted, handler absent | No |
 | Teardown/state restoration | Required | Required | No |
 | Debug/Release/Benchmark compile | Required | Required | Yes |
 | WDK analysis | Required | Required | Yes |

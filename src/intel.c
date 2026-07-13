@@ -176,8 +176,8 @@ IntelFree(
         return;
     }
     context = (INTEL_BACKEND_CONTEXT*)State->BackendContext;
+    IntelHookTeardown();
     IntelFreeEpt(context);
-    IntelHookResetTable();
     ExFreePoolWithTag(context, HV_POOL_TAG_BACKEND);
     State->BackendContext = NULL;
 }

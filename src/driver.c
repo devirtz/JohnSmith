@@ -1,5 +1,6 @@
 #include <ntifs.h>
 
+#include "device.h"
 #include "hv.h"
 #include "hv_log.h"
 
@@ -139,6 +140,9 @@ JohnSmithStartWorker(
     if (NT_SUCCESS(status) && requested != 0 &&
         InterlockedCompareExchange(&g_StopRequested, 0, 0) == 0) {
         status = HvStart(&g_Hypervisor);
+        if (NT_SUCCESS(status)) {
+            JsDevicePublishHypervisor(g_Hypervisor);
+        }
         state = NT_SUCCESS(status)
             ? JOHNSMITH_START_SUCCEEDED
             : JOHNSMITH_START_FAILED;
@@ -167,8 +171,6 @@ JohnSmithUnload(
     _In_ PDRIVER_OBJECT DriverObject
     )
 {
-    UNREFERENCED_PARAMETER(DriverObject);
-
     if (InterlockedCompareExchange(&g_StartWorkerQueued, 0, 0) != 0) {
         InterlockedExchange(&g_StopRequested, 1);
         (VOID)KeWaitForSingleObject(
@@ -181,10 +183,12 @@ JohnSmithUnload(
         g_StartThread = NULL;
         JohnSmithFreeRegistryPath();
     }
+    JsDevicePublishHypervisor(NULL);
     if (g_Hypervisor != NULL) {
         HvStop(g_Hypervisor);
         g_Hypervisor = NULL;
     }
+    JsDeviceTeardown(DriverObject);
 }
 
 _Use_decl_annotations_
@@ -216,6 +220,13 @@ DriverEntry(
     RtlZeroMemory(g_RegistryPath.Buffer, g_RegistryPath.MaximumLength);
     RtlCopyUnicodeString(&g_RegistryPath, RegistryPath);
 
+    status = JsDeviceInitialize(DriverObject);
+    if (!NT_SUCCESS(status)) {
+        JohnSmithFreeRegistryPath();
+        DriverObject->DriverUnload = NULL;
+        return status;
+    }
+
     status = JohnSmithQueryDword(L"StartRequested", &startRequested);
     if (NT_SUCCESS(status) && startRequested == 0) {
         JohnSmithSetStartResult(JOHNSMITH_START_PENDING, STATUS_PENDING);
@@ -229,6 +240,7 @@ DriverEntry(
             NULL);
         if (!NT_SUCCESS(status)) {
             JohnSmithSetStartResult(JOHNSMITH_START_FAILED, status);
+            JsDeviceTeardown(DriverObject);
             JohnSmithFreeRegistryPath();
             DriverObject->DriverUnload = NULL;
             return status;
@@ -253,6 +265,7 @@ DriverEntry(
                 DriverObject->DriverUnload = NULL;
                 return STATUS_SUCCESS;
             }
+            JsDeviceTeardown(DriverObject);
             JohnSmithFreeRegistryPath();
             DriverObject->DriverUnload = NULL;
             return referenceStatus;
@@ -264,13 +277,17 @@ DriverEntry(
 
     JohnSmithFreeRegistryPath();
     if (!NT_SUCCESS(status) && status != STATUS_OBJECT_NAME_NOT_FOUND) {
+        JsDeviceTeardown(DriverObject);
         DriverObject->DriverUnload = NULL;
         return status;
     }
     status = HvStart(&g_Hypervisor);
     if (!NT_SUCCESS(status)) {
+        JsDeviceTeardown(DriverObject);
         DriverObject->DriverUnload = NULL;
         g_Hypervisor = NULL;
+    } else {
+        JsDevicePublishHypervisor(g_Hypervisor);
     }
 
     return status;

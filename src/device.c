@@ -19,6 +19,35 @@ static PDEVICE_OBJECT g_DeviceObject;
 static UNICODE_STRING g_SymbolicLink;
 static BOOLEAN g_SymbolicLinkCreated;
 static HV_STATE* volatile g_PublishedHypervisor;
+static EX_RUNDOWN_REF g_HypervisorRundown;
+static volatile LONG g_AcceptingRequests;
+
+static BOOLEAN
+JsAcquirePublishedHypervisor(
+    _Outptr_result_maybenull_ HV_STATE** State
+    )
+{
+    *State = NULL;
+    if (InterlockedCompareExchange(&g_AcceptingRequests, 0, 0) == 0 ||
+        !ExAcquireRundownProtection(&g_HypervisorRundown)) {
+        return FALSE;
+    }
+    if (InterlockedCompareExchange(&g_AcceptingRequests, 0, 0) == 0) {
+        ExReleaseRundownProtection(&g_HypervisorRundown);
+        return FALSE;
+    }
+    *State = (HV_STATE*)InterlockedCompareExchangePointer(
+        (PVOID volatile*)&g_PublishedHypervisor, NULL, NULL);
+    return TRUE;
+}
+
+static VOID
+JsReleasePublishedHypervisor(
+    VOID
+    )
+{
+    ExReleaseRundownProtection(&g_HypervisorRundown);
+}
 
 static ULONG
 JsWireLifecycle(
@@ -101,7 +130,9 @@ JsHandleStatus(
     RtlZeroMemory(response, sizeof(*response));
     response->AbiVersion = JOHNSMITH_ABI_VERSION;
 
-    hv = (HV_STATE*)ReadPointerNoFence((PVOID*)&g_PublishedHypervisor);
+    if (!JsAcquirePublishedHypervisor(&hv)) {
+        return STATUS_DELETE_PENDING;
+    }
     if (hv == NULL) {
         response->Lifecycle = JohnSmithLifecycleStopped;
         JsCopyBackendName(response->BackendName, NULL);
@@ -128,6 +159,7 @@ JsHandleStatus(
         response->RunningCpuCount = running;
     }
 
+    JsReleasePublishedHypervisor();
     *BytesWritten = sizeof(*response);
     return STATUS_SUCCESS;
 }
@@ -163,10 +195,13 @@ JsHandleHookInstall(
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    hv = (HV_STATE*)ReadPointerNoFence((PVOID*)&g_PublishedHypervisor);
+    if (!JsAcquirePublishedHypervisor(&hv)) {
+        return STATUS_DELETE_PENDING;
+    }
     if (hv == NULL || hv->Backend == NULL ||
         hv->Backend->HookInstall == NULL) {
-        return STATUS_NOT_SUPPORTED;
+        status = STATUS_NOT_SUPPORTED;
+        goto Exit;
     }
     status = hv->Backend->HookInstall(
         hv,
@@ -177,14 +212,18 @@ JsHandleHookInstall(
         request->Cookie,
         &hookId);
     if (!NT_SUCCESS(status)) {
-        return status;
+        goto Exit;
     }
 
     response = (JOHNSMITH_HOOK_INSTALL_RESPONSE*)Output;
     RtlZeroMemory(response, sizeof(*response));
     response->HookId = hookId;
     *BytesWritten = sizeof(*response);
-    return STATUS_SUCCESS;
+    status = STATUS_SUCCESS;
+
+Exit:
+    JsReleasePublishedHypervisor();
+    return status;
 }
 
 static NTSTATUS
@@ -209,12 +248,17 @@ JsHandleHookRemove(
         return STATUS_INVALID_PARAMETER;
     }
 
-    hv = (HV_STATE*)ReadPointerNoFence((PVOID*)&g_PublishedHypervisor);
+    if (!JsAcquirePublishedHypervisor(&hv)) {
+        return STATUS_DELETE_PENDING;
+    }
     if (hv == NULL || hv->Backend == NULL ||
         hv->Backend->HookRemove == NULL) {
-        return STATUS_NOT_SUPPORTED;
+        status = STATUS_NOT_SUPPORTED;
+    } else {
+        status = hv->Backend->HookRemove(hv, request->HookId);
     }
-    return hv->Backend->HookRemove(hv, request->HookId);
+    JsReleasePublishedHypervisor();
+    return status;
 }
 
 static NTSTATUS
@@ -250,15 +294,18 @@ JsHandleHookQuery(
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    hv = (HV_STATE*)ReadPointerNoFence((PVOID*)&g_PublishedHypervisor);
+    if (!JsAcquirePublishedHypervisor(&hv)) {
+        return STATUS_DELETE_PENDING;
+    }
     if (hv == NULL || hv->Backend == NULL ||
         hv->Backend->HookQuery == NULL) {
-        return STATUS_NOT_SUPPORTED;
+        status = STATUS_NOT_SUPPORTED;
+        goto Exit;
     }
     status = hv->Backend->HookQuery(
         hv, request->HookId, &valid, &kind, &cookie, &gpa, &shadow);
     if (!NT_SUCCESS(status)) {
-        return status;
+        goto Exit;
     }
 
     response = (JOHNSMITH_HOOK_QUERY_RESPONSE*)Output;
@@ -269,7 +316,11 @@ JsHandleHookQuery(
     response->GuestPhysicalAddress = gpa;
     response->ShadowHostPhysicalAddress = shadow;
     *BytesWritten = sizeof(*response);
-    return STATUS_SUCCESS;
+    status = STATUS_SUCCESS;
+
+Exit:
+    JsReleasePublishedHypervisor();
+    return status;
 }
 
 _Function_class_(DRIVER_DISPATCH)
@@ -387,6 +438,11 @@ JsDeviceInitialize(
         return STATUS_ALREADY_INITIALIZED;
     }
 
+    ExInitializeRundownProtection(&g_HypervisorRundown);
+    InterlockedExchange(&g_AcceptingRequests, 0);
+    (VOID)InterlockedExchangePointer(
+        (PVOID volatile*)&g_PublishedHypervisor, NULL);
+
     status = IoCreateDeviceSecure(
         DriverObject,
         0,
@@ -404,7 +460,6 @@ JsDeviceInitialize(
     }
 
     deviceObject->Flags |= DO_BUFFERED_IO;
-    deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
 
     status = IoCreateSymbolicLink(&linkName, &deviceName);
     if (!NT_SUCCESS(status)) {
@@ -419,6 +474,8 @@ JsDeviceInitialize(
     g_SymbolicLink = linkName;
     g_SymbolicLinkCreated = TRUE;
     g_DeviceObject = deviceObject;
+    InterlockedExchange(&g_AcceptingRequests, 1);
+    deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
     return STATUS_SUCCESS;
 }
 
@@ -430,6 +487,7 @@ JsDeviceTeardown(
 {
     UNREFERENCED_PARAMETER(DriverObject);
 
+    JsDevicePublishHypervisor(NULL);
     if (g_SymbolicLinkCreated) {
         (VOID)IoDeleteSymbolicLink(&g_SymbolicLink);
         g_SymbolicLinkCreated = FALSE;
@@ -438,17 +496,14 @@ JsDeviceTeardown(
         IoDeleteDevice(g_DeviceObject);
         g_DeviceObject = NULL;
     }
-    (VOID)InterlockedExchangePointer(
-        (PVOID volatile*)&g_PublishedHypervisor, NULL);
 }
 
-_IRQL_requires_max_(APC_LEVEL)
+_IRQL_requires_(PASSIVE_LEVEL)
 VOID
 JsDevicePublishHypervisor(
     _In_opt_ HV_STATE* State
     )
 {
-
     HV_STATE* previous = (HV_STATE*)InterlockedExchangePointer(
         (PVOID volatile*)&g_PublishedHypervisor, State);
     if (State != NULL) {
@@ -456,7 +511,12 @@ JsDevicePublishHypervisor(
             "device: published backend %s, %lu CPUs.\n",
             State->Backend != NULL ? State->Backend->Name : "(none)",
             State->CpuCount);
-    } else if (previous != NULL) {
-        HV_LOG_INFO("device: cleared published hypervisor.\n");
+    } else {
+        if (InterlockedExchange(&g_AcceptingRequests, 0) != 0) {
+            ExWaitForRundownProtectionRelease(&g_HypervisorRundown);
+        }
+        if (previous != NULL) {
+            HV_LOG_INFO("device: cleared published hypervisor.\n");
+        }
     }
 }

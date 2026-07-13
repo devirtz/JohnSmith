@@ -1111,39 +1111,42 @@ IntelVmExitHandler(
         IntelDecodeEptViolation(
             qualification, guestPhysical, guestLinear, &decoded);
 
-        if (IntelHookLookup(guestPhysical, &policy)) {
+        {
             INTEL_BACKEND_CONTEXT* backend =
                 (INTEL_BACKEND_CONTEXT*)context->BackendContext;
-            const INTEL_EPT_ROOT* target = NULL;
 
-            if (backend != NULL && backend->HookRoot != NULL) {
-                BOOLEAN onSecondary = (context->EptPointer ==
-                                       backend->HookRoot->EptPointer);
-                if (decoded.Execute && !onSecondary) {
-                    target = backend->HookRoot;
-                } else if (!decoded.Execute && onSecondary) {
-                    target = &backend->PrimaryRoot;
+            if (IntelHookLookup(backend, guestPhysical, &policy)) {
+                const INTEL_EPT_ROOT* target = NULL;
+
+                if (backend != NULL && backend->HookRoot != NULL) {
+                    BOOLEAN onSecondary = (context->EptPointer ==
+                                           backend->HookRoot->EptPointer);
+                    if (decoded.Execute && !onSecondary) {
+                        target = backend->HookRoot;
+                    } else if (!decoded.Execute && onSecondary) {
+                        target = &backend->PrimaryRoot;
+                    }
                 }
-            }
-            if (target != NULL) {
-                NTSTATUS switchStatus =
-                    IntelSwitchActiveEptRoot(context, target);
-                if (NT_SUCCESS(switchStatus)) {
-                    /* Retry the guest instruction on the new view; do
-                       not advance RIP. */
-                    return IntelCompleteVmExit(
-                        context, INTEL_VMEXIT_RESUME);
+                if (target != NULL) {
+                    NTSTATUS switchStatus =
+                        IntelSwitchActiveEptRoot(context, target);
+                    if (NT_SUCCESS(switchStatus)) {
+                        /* Retry the guest instruction on the new view; do
+                           not advance RIP. */
+                        return IntelCompleteVmExit(
+                            context, INTEL_VMEXIT_RESUME);
+                    }
                 }
+                /* Policy match but view already correct (or unswitchable):
+                   fail-stop with policy identity in bugcheck parameter 4 so
+                   bring-up can diagnose the stuck transition. */
+                KeBugCheckEx(
+                    HYPERVISOR_ERROR,
+                    INTEL_BUGCHECK_EPT_VIOLATION,
+                    decoded.Qualification,
+                    decoded.GuestPhysicalAddress,
+                    ((ULONG64)policy.Cookie << 32) | policy.Kind);
             }
-            /* Policy match but view already correct (or unswitchable):
-               fail-stop with policy identity in bugcheck parameter 4 so
-               bring-up can diagnose the stuck transition. */
-            KeBugCheckEx(
-                HYPERVISOR_ERROR,
-                INTEL_BUGCHECK_EPT_VIOLATION,
-                decoded.Qualification,
-                decoded.GuestPhysicalAddress,
-                ((ULONG64)policy.Cookie << 32) | policy.Kind);
         }
 
         {

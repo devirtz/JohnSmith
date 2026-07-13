@@ -59,6 +59,26 @@ AmdIsPrivateHypercall(
            Registers->R8 == HV_HYPERCALL_MAGIC_R8;
 }
 
+static VOID
+AmdApplyCpuidPolicy(
+    _In_ ULONG Leaf,
+    _In_ ULONG Subleaf,
+    _Out_writes_(4) int Result[4]
+    )
+{
+    __cpuidex(Result, (int)Leaf, (int)Subleaf);
+
+    if (Leaf == 1) {
+        Result[2] &= (int)~((1u << 31) | (1u << 5));
+        NT_ASSERT((((ULONG)Result[2]) & ((1u << 31) | (1u << 5))) == 0);
+    } else if (Leaf == 0x80000001u) {
+        Result[2] &= (int)~(1u << 2);
+        NT_ASSERT((((ULONG)Result[2]) & (1u << 2)) == 0);
+    } else if (Leaf == 0x8000000Au) {
+        RtlZeroMemory(Result, sizeof(int) * 4);
+    }
+}
+
 ULONG
 AmdVmExitHandler(
     _Inout_ AMD_GUEST_REGISTERS* Registers,
@@ -86,6 +106,21 @@ AmdVmExitHandler(
             HV_CPU_STARTING) {
         context->Virtualized = FALSE;
         return AMD_VMEXIT_STOP;
+    }
+
+    if (exitCode == AMD_EXIT_CPUID) {
+        ULONG leaf = (ULONG)vmcb->State.Rax;
+        ULONG subleaf = (ULONG)Registers->Rcx;
+        int cpuid[4];
+
+        AmdApplyCpuidPolicy(leaf, subleaf, cpuid);
+        vmcb->State.Rax = (ULONG)cpuid[0];
+        Registers->Rbx = (ULONG)cpuid[1];
+        Registers->Rcx = (ULONG)cpuid[2];
+        Registers->Rdx = (ULONG)cpuid[3];
+        vmcb->State.Rip = vmcb->Control.NextRip;
+        vmcb->Control.VmcbClean = 0;
+        return AMD_VMEXIT_RESUME;
     }
 
     if (exitCode == AMD_EXIT_MSR) {
