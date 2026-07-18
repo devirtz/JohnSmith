@@ -6,8 +6,7 @@ backends for isolated red-team experiments.
 ![JohnSmith banner](static/img/main.png)
 
 > [!WARNING]
-> Experimental kernel software. Use a disposable test system with a kernel
-> debugger. A faulty VM-exit or teardown path can crash or corrupt the host.
+> Experimental Hypervisor, Not Ready for daily use or production uses
 
 ## Capabilities
 
