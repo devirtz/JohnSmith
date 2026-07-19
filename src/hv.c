@@ -411,14 +411,14 @@ HvStart(
         goto FailPreparedCpus;
     }
 
-    status = HvStartProcessors(&HvGlobalState);
+    status = IntelHypercallWorkerStart();
     if (!NT_SUCCESS(status)) {
-        HvStopProcessorsOrFail(&HvGlobalState, HV_FAIL_STOP_ROLLBACK);
         goto FailIntrospection;
     }
 
-    status = IntelHypercallWorkerStart();
+    status = HvStartProcessors(&HvGlobalState);
     if (!NT_SUCCESS(status)) {
+        IntelHypercallWorkerStop();
         HvStopProcessorsOrFail(&HvGlobalState, HV_FAIL_STOP_ROLLBACK);
         goto FailIntrospection;
     }
