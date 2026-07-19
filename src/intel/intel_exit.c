@@ -1136,15 +1136,14 @@ IntelVmExitHandler(
     }
 
     if (reason == VMX_EXIT_RDTSC || reason == VMX_EXIT_RDTSCP) {
-        ULONG64 tscOffset = context->TscOffset;
         ULONG64 tsc;
 
         if (reason == VMX_EXIT_RDTSCP) {
             unsigned int aux;
-            tsc = __rdtscp(&aux) + tscOffset;
+            tsc = IntelRendezvousGuestTsc(context, __rdtscp(&aux));
             Registers->Rcx = aux;
         } else {
-            tsc = __rdtsc() + tscOffset;
+            tsc = IntelRendezvousGuestTsc(context, __rdtsc());
         }
         Registers->Rax = (ULONG)tsc;
         Registers->Rdx = (ULONG)(tsc >> 32);
@@ -1268,7 +1267,7 @@ IntelVmExitHandler(
         ULONG64 msrValue;
 
         if (msr == IA32_TIME_STAMP_COUNTER) {
-            msrValue = __rdtsc() + context->TscOffset;
+            msrValue = IntelRendezvousGuestTsc(context, __rdtsc());
             Registers->Rax = (ULONG)msrValue;
             Registers->Rdx = (ULONG)(msrValue >> 32);
             IntelAdvanceGuestRip(

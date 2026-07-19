@@ -470,7 +470,7 @@ IntelRendezvousApplyOffset(
 {
     ULONG64 offset;
 
-    offset = Context->TscOffset - Delta;
+    offset = IntelRendezvousApplyTscDelta(Context->TscOffset, Delta);
     if (!NT_SUCCESS(IntelVmWrite(VMCS_TSC_OFFSET, offset))) {
         KeBugCheckEx(
             HYPERVISOR_ERROR,
@@ -725,6 +725,33 @@ IntelRendezvousBegin(
         &backend->Rendezvous.FrozenStartTsc, (LONG64)__rdtsc());
     InterlockedExchange(&backend->Rendezvous.Phase, INTEL_RENDEZVOUS_FROZEN);
     return TRUE;
+}
+
+ULONG64
+IntelRendezvousGuestTsc(
+    _In_ const INTEL_CPU_CONTEXT* Context,
+    _In_ ULONG64 HostTsc
+    )
+{
+    INTEL_BACKEND_CONTEXT* backend;
+    LONG64 epoch;
+    LONG64 ownedEpoch;
+
+    backend = IntelRendezvousBackend(Context);
+    if (backend != NULL) {
+        ownedEpoch = InterlockedCompareExchange64(
+            (volatile LONG64*)&Context->RendezvousOwnedEpoch, 0, 0);
+        epoch = IntelRendezvousReadEpoch(backend);
+        if (ownedEpoch != 0 && ownedEpoch == epoch &&
+            backend->Rendezvous.OwnerProcessor == Context->ProcessorIndex &&
+            IntelRendezvousReadPhase(backend) == INTEL_RENDEZVOUS_FROZEN) {
+            return IntelRendezvousFrozenGuestTsc(
+                (ULONG64)InterlockedCompareExchange64(
+                    &backend->Rendezvous.FrozenStartTsc, 0, 0),
+                Context->TscOffset);
+        }
+    }
+    return HostTsc + Context->TscOffset;
 }
 
 VOID

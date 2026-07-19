@@ -7,6 +7,11 @@ main(void)
 {
     unsigned budget;
     unsigned index;
+    unsigned long long oldOffset = 1000ull;
+    unsigned long long frozenStart = 5000ull;
+    unsigned long long finish = 5200ull;
+    unsigned long long resume = 5300ull;
+    unsigned long long newOffset;
 
     assert(INTEL_RENDEZVOUS_ICR_LOW == 0x000C4400u);
     assert(IntelRendezvousClassifyPolicy(
@@ -64,8 +69,18 @@ main(void)
     assert(IntelRendezvousConsumeBudget(
         INTEL_POLICY_EXIT_PREEMPTION_TIMER, 8) == 8);
     assert(IntelRendezvousReloadBudget() == 8);
-    assert((INTEL_POLICY_REQUIRED_PIN_CONTROLS & (1u << 3)) != 0);
-    assert((INTEL_POLICY_REQUIRED_PIN_CONTROLS & (1u << 5)) != 0);
-    assert((INTEL_POLICY_REQUIRED_PRIMARY_CONTROLS & (1u << 3)) != 0);
+    assert(INTEL_POLICY_REQUIRED_PIN_CONTROLS ==
+           ((1u << 3) | (1u << 5)));
+    assert(INTEL_POLICY_REQUIRED_PRIMARY_CONTROLS ==
+           ((1u << 31) | (1u << 28) | (1u << 3)));
+
+    assert(IntelRendezvousApplyTscDelta(1000ull, 200ull) == 800ull);
+    assert(IntelRendezvousFrozenGuestTsc(5000ull, 1000ull) == 6000ull);
+    assert(IntelRendezvousApplyTscDelta(0ull, 1ull) == ~0ull);
+    assert(IntelRendezvousFrozenGuestTsc(frozenStart, oldOffset) == 6000ull);
+    newOffset = IntelRendezvousApplyTscDelta(
+        oldOffset, finish - frozenStart);
+    assert(resume >= finish);
+    assert(resume + newOffset >= frozenStart + oldOffset);
     return 0;
 }

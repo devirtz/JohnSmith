@@ -80,3 +80,21 @@ IntelRendezvousReloadBudget(void)
 {
     return INTEL_RENDEZVOUS_HOOK_BUDGET;
 }
+
+static inline unsigned long long
+IntelRendezvousApplyTscDelta(
+    unsigned long long offset,
+    unsigned long long delta
+    )
+{
+    return offset - delta;
+}
+
+static inline unsigned long long
+IntelRendezvousFrozenGuestTsc(
+    unsigned long long frozenStart,
+    unsigned long long offset
+    )
+{
+    return frozenStart + offset;
+}

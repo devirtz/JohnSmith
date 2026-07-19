@@ -479,6 +479,12 @@ IntelRendezvousBegin(
     _Inout_ INTEL_CPU_CONTEXT* Context
     );
 
+ULONG64
+IntelRendezvousGuestTsc(
+    _In_ const INTEL_CPU_CONTEXT* Context,
+    _In_ ULONG64 HostTsc
+    );
+
 VOID
 IntelRendezvousFinish(
     _Inout_ INTEL_CPU_CONTEXT* Context
