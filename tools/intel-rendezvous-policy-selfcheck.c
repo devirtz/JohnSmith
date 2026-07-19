@@ -73,6 +73,7 @@ main(void)
            ((1u << 3) | (1u << 5)));
     assert(INTEL_POLICY_REQUIRED_PRIMARY_CONTROLS ==
            ((1u << 31) | (1u << 28) | (1u << 3)));
+    assert(INTEL_POLICY_REQUIRED_DYNAMIC_PRIMARY_CONTROLS == (1u << 22));
 
     assert(IntelRendezvousApplyTscDelta(1000ull, 200ull) == 800ull);
     assert(IntelRendezvousFrozenGuestTsc(5000ull, 1000ull) == 6000ull);

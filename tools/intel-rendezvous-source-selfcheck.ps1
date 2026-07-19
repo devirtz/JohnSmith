@@ -6,6 +6,7 @@ $hvHeader = Get-Content -Raw (Join-Path $Root 'include/hv.h')
 $hvSource = Get-Content -Raw (Join-Path $Root 'src/hv.c')
 $amdSource = Get-Content -Raw (Join-Path $Root 'src/amd.c')
 $intelSource = Get-Content -Raw (Join-Path $Root 'src/intel.c')
+$intelExitSource = Get-Content -Raw (Join-Path $Root 'src/intel/intel_exit.c')
 $rendezvousSource = Get-Content -Raw `
     (Join-Path $Root 'src/intel/intel_rendezvous.c')
 
@@ -56,3 +57,11 @@ if ($markerWait -lt 0 -or $markerPublish -lt 0 -or
 
 Assert-Contains $rendezvousSource 'IntelRendezvousQuiesce(' `
     'Intel rendezvous lacks a PASSIVE_LEVEL quiesce implementation.'
+
+$setPrimaryStart = $intelExitSource.IndexOf('IntelSetPrimaryControl(')
+$setPrimaryEnd = $intelExitSource.IndexOf(
+    'IntelGuestCanTakeNmi(', $setPrimaryStart)
+$setPrimary = $intelExitSource.Substring(
+    $setPrimaryStart, $setPrimaryEnd - $setPrimaryStart)
+Assert-Contains $setPrimary 'KeBugCheckEx(' `
+    'IntelSetPrimaryControl silently ignores VMWRITE failure.'

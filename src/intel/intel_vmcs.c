@@ -122,6 +122,7 @@ IntelSetupVmcs(
     ULONG64 cr4Fixed1;
     ULONG64 hostRsp;
     ULONG64 eptp;
+    ULONG64 primaryCapability;
     INTEL_HOST_STACK_FRAME* hostFrame;
     int cpuid[4];
     NTSTATUS status;
@@ -149,6 +150,7 @@ IntelSetupVmcs(
         ? IA32_VMX_TRUE_PINBASED_CTLS : IA32_VMX_PINBASED_CTLS;
     primaryMsr = (backend->VmxBasic & (1ull << 55)) != 0
         ? IA32_VMX_TRUE_PROCBASED_CTLS : IA32_VMX_PROCBASED_CTLS;
+    primaryCapability = __readmsr(primaryMsr);
     exitMsr = (backend->VmxBasic & (1ull << 55)) != 0
         ? IA32_VMX_TRUE_EXIT_CTLS : IA32_VMX_EXIT_CTLS;
     entryMsr = (backend->VmxBasic & (1ull << 55)) != 0
@@ -260,6 +262,11 @@ IntelSetupVmcs(
     }
     if ((primaryControls & requiredPrimary) != requiredPrimary) {
         context->ControlFailureMask |= INTEL_CONTROL_FAIL_PRIMARY_REQUIRED;
+    }
+    if (((ULONG)(primaryCapability >> 32) &
+         INTEL_POLICY_REQUIRED_DYNAMIC_PRIMARY_CONTROLS) !=
+        INTEL_POLICY_REQUIRED_DYNAMIC_PRIMARY_CONTROLS) {
+        context->ControlFailureMask |= INTEL_CONTROL_FAIL_NMI_WINDOW;
     }
     if ((primaryControls & VMX_PRIMARY_ACTIVATE_SECONDARY) == 0) {
         context->ControlFailureMask |= INTEL_CONTROL_FAIL_SECONDARY_ACTIVATION;

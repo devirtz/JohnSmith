@@ -5,6 +5,7 @@
 
 #define INTEL_POLICY_REQUIRED_PIN_CONTROLS     ((1u << 3) | (1u << 5))
 #define INTEL_POLICY_REQUIRED_PRIMARY_CONTROLS ((1u << 31) | (1u << 28) | (1u << 3))
+#define INTEL_POLICY_REQUIRED_DYNAMIC_PRIMARY_CONTROLS (1u << 22)
 
 #define INTEL_POLICY_IA32_TSC             0x00000010u
 

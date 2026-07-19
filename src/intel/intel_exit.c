@@ -322,10 +322,16 @@ IntelSetPrimaryControl(
     if (updated == controls) {
         return;
     }
-    if (NT_SUCCESS(IntelVmWrite(
+    if (!NT_SUCCESS(IntelVmWrite(
             VMCS_PRIMARY_PROCESSOR_CONTROLS, updated))) {
-        Context->PrimaryControls = updated;
+        KeBugCheckEx(
+            HYPERVISOR_ERROR,
+            INTEL_BUGCHECK_CONTROL_UPDATE,
+            Context->ProcessorIndex,
+            updated,
+            Bit);
     }
+    Context->PrimaryControls = updated;
 }
 
 static BOOLEAN
