@@ -478,9 +478,9 @@ HvStop(
         State->Backend->Name,
         State->CpuCount);
 
+    IntelHypercallWorkerStop();
     State->Backend->Quiesce(State);
     HvStopProcessorsOrFail(State, HV_FAIL_STOP_SHUTDOWN);
-    IntelHypercallWorkerStop();
     ExWaitForRundownProtectionRelease(&HvPublishRundown);
 
     {

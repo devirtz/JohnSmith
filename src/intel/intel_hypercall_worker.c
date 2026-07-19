@@ -46,6 +46,7 @@ static KEVENT g_WorkerEvent;
 static PKTHREAD g_WorkerThread;
 static HANDLE g_WorkerThreadHandle;
 static volatile LONG g_WorkerStop;
+static EX_RUNDOWN_REF g_WorkerAdmissionRundown;
 static EX_PUSH_LOCK g_RegistrationLock;
 static BOOLEAN g_ProcessNotifyRegistered;
 
@@ -456,12 +457,16 @@ IntelHypercallWorkerEnqueueRegister(
     if (Context == NULL || Process == NULL || SharedPageUserVa == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
+    if (!ExAcquireRundownProtection(&g_WorkerAdmissionRundown)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
 
     ObReferenceObject(Process);
     head = InterlockedCompareExchange(&g_WorkerHead, 0, 0);
     tail = InterlockedCompareExchange(&g_WorkerTail, 0, 0);
     if (head - tail >= (LONG)INTEL_HCALL_WORKER_CAPACITY) {
         ObDereferenceObject(Process);
+        ExReleaseRundownProtection(&g_WorkerAdmissionRundown);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -473,6 +478,7 @@ IntelHypercallWorkerEnqueueRegister(
     slot->SharedPageUserVa = SharedPageUserVa;
     KeMemoryBarrier();
     InterlockedIncrement(&g_WorkerHead);
+    ExReleaseRundownProtection(&g_WorkerAdmissionRundown);
     return STATUS_SUCCESS;
 }
 
@@ -498,7 +504,11 @@ IntelHypercallWorkerEnqueue(
         Context == NULL || Page == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
+    if (!ExAcquireRundownProtection(&g_WorkerAdmissionRundown)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
     if (!ExAcquireRundownProtection(&Context->HypercallPageRundown)) {
+        ExReleaseRundownProtection(&g_WorkerAdmissionRundown);
         return STATUS_DEVICE_NOT_READY;
     }
 
@@ -507,6 +517,7 @@ IntelHypercallWorkerEnqueue(
 
     if (head - tail >= (LONG)INTEL_HCALL_WORKER_CAPACITY) {
         ExReleaseRundownProtection(&Context->HypercallPageRundown);
+        ExReleaseRundownProtection(&g_WorkerAdmissionRundown);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -523,6 +534,7 @@ IntelHypercallWorkerEnqueue(
     }
     KeMemoryBarrier();
     InterlockedIncrement(&g_WorkerHead);
+    ExReleaseRundownProtection(&g_WorkerAdmissionRundown);
     return STATUS_SUCCESS;
 }
 
@@ -536,6 +548,7 @@ IntelHypercallWorkerStart(
     g_WorkerHead = 0;
     g_WorkerTail = 0;
     g_WorkerStop = 0;
+    ExInitializeRundownProtection(&g_WorkerAdmissionRundown);
     ExInitializePushLock(&g_RegistrationLock);
     g_ProcessNotifyRegistered = FALSE;
     KeInitializeEvent(&g_WorkerEvent, SynchronizationEvent, FALSE);
@@ -551,6 +564,7 @@ IntelHypercallWorkerStart(
         IntelHypercallWorkerThread,
         NULL);
     if (!NT_SUCCESS(status)) {
+        ExWaitForRundownProtectionRelease(&g_WorkerAdmissionRundown);
         return status;
     }
 
@@ -561,17 +575,22 @@ IntelHypercallWorkerStart(
         KernelMode,
         (PVOID*)&g_WorkerThread,
         NULL);
-    ZwClose(g_WorkerThreadHandle);
-    g_WorkerThreadHandle = NULL;
     if (!NT_SUCCESS(status)) {
+        ExWaitForRundownProtectionRelease(&g_WorkerAdmissionRundown);
         InterlockedExchange(&g_WorkerStop, 1);
         KeSetEvent(&g_WorkerEvent, IO_NO_INCREMENT, FALSE);
+        (VOID)ZwWaitForSingleObject(g_WorkerThreadHandle, FALSE, NULL);
+        ZwClose(g_WorkerThreadHandle);
+        g_WorkerThreadHandle = NULL;
         return status;
     }
+    ZwClose(g_WorkerThreadHandle);
+    g_WorkerThreadHandle = NULL;
 
     status = PsSetCreateProcessNotifyRoutine(
         IntelHypercallProcessNotify, FALSE);
     if (!NT_SUCCESS(status)) {
+        ExWaitForRundownProtectionRelease(&g_WorkerAdmissionRundown);
         InterlockedExchange(&g_WorkerStop, 1);
         KeSetEvent(&g_WorkerEvent, IO_NO_INCREMENT, FALSE);
         KeWaitForSingleObject(
@@ -592,6 +611,7 @@ IntelHypercallWorkerStop(
     if (g_WorkerThread == NULL) {
         return;
     }
+    ExWaitForRundownProtectionRelease(&g_WorkerAdmissionRundown);
     InterlockedExchange(&g_WorkerStop, 1);
     KeSetEvent(&g_WorkerEvent, IO_NO_INCREMENT, FALSE);
     KeWaitForSingleObject(
