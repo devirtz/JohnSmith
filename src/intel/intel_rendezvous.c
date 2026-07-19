@@ -448,18 +448,97 @@ IntelRendezvousAdvanceEpoch(
 static VOID
 IntelRendezvousAbort(
     _Inout_ INTEL_BACKEND_CONTEXT* Backend,
-    _Inout_ volatile LONG64* TimeoutCounter
+    _Inout_opt_ volatile LONG64* TimeoutCounter
     )
 {
     InterlockedExchange64(&Backend->Rendezvous.CompensationDelta, 0);
     InterlockedExchange64(
         &Backend->Rendezvous.ResumeTsc, (LONG64)__rdtsc());
-    InterlockedIncrement64(TimeoutCounter);
+    if (TimeoutCounter != NULL) {
+        InterlockedIncrement64(TimeoutCounter);
+    }
     InterlockedExchange(
         &Backend->Rendezvous.Phase, INTEL_RENDEZVOUS_ABORTING);
     Backend->Rendezvous.OwnerProcessor = INVALID_PROCESSOR_INDEX;
     KeMemoryBarrier();
     InterlockedExchange(&Backend->Rendezvous.Phase, INTEL_RENDEZVOUS_IDLE);
+}
+
+static BOOLEAN
+IntelRendezvousExpectedNmisConsumed(
+    _In_ const INTEL_BACKEND_CONTEXT* Backend
+    )
+{
+    INTEL_CPU_CONTEXT* context;
+    HV_STATE* state;
+    LONG64 consumed;
+    LONG64 expected;
+    ULONG index;
+
+    state = Backend->State;
+    for (index = 0; index < state->CpuCount; ++index) {
+        context = (INTEL_CPU_CONTEXT*)state->Cpus[index].VendorContext;
+        if (context == NULL) {
+            continue;
+        }
+        expected = InterlockedCompareExchange64(
+            &context->RendezvousExpectedNmiEpoch, 0, 0);
+        consumed = InterlockedCompareExchange64(
+            &context->RendezvousConsumedNmiEpoch, 0, 0);
+        if (expected > consumed) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static BOOLEAN
+IntelRendezvousWaitForExpectedNmis(
+    _In_ const INTEL_BACKEND_CONTEXT* Backend,
+    _In_ ULONG64 Deadline
+    )
+{
+    while (!IntelRendezvousExpectedNmisConsumed(Backend)) {
+        if (IntelRendezvousDeadlineExpired(Deadline)) {
+            return FALSE;
+        }
+        _mm_pause();
+    }
+    return TRUE;
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+VOID
+IntelRendezvousQuiesce(
+    _Inout_ INTEL_BACKEND_CONTEXT* Backend
+    )
+{
+    ULONG64 deadline;
+    LONG phase;
+
+    if (Backend == NULL || Backend->State == NULL ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        KeBugCheckEx(
+            HYPERVISOR_ERROR, INTEL_BUGCHECK_RENDEZVOUS,
+            INVALID_PROCESSOR_INDEX, 0, 0);
+    }
+    deadline = __rdtsc() + Backend->RendezvousTimeoutTicks;
+    for (;;) {
+        phase = IntelRendezvousReadPhase(Backend);
+        if (phase == INTEL_RENDEZVOUS_IDLE &&
+            IntelRendezvousExpectedNmisConsumed(Backend)) {
+            return;
+        }
+        if (IntelRendezvousDeadlineExpired(deadline)) {
+            KeBugCheckEx(
+                HYPERVISOR_ERROR,
+                INTEL_BUGCHECK_RENDEZVOUS,
+                (ULONG_PTR)phase,
+                Backend->Rendezvous.OwnerProcessor,
+                (ULONG_PTR)IntelRendezvousReadEpoch(Backend));
+        }
+        _mm_pause();
+    }
 }
 
 static VOID
@@ -669,11 +748,23 @@ IntelRendezvousBegin(
             backend, &backend->Rendezvous.AcquisitionTimeouts);
         return FALSE;
     }
+    if (!IntelRendezvousWaitForExpectedNmis(backend, (ULONG64)deadline)) {
+        InterlockedExchange64(&Context->RendezvousOwnedEpoch, 0);
+        IntelRendezvousAbort(
+            backend, &backend->Rendezvous.AcquisitionTimeouts);
+        return FALSE;
+    }
     if (backend->ApicMode == INTEL_APIC_MODE_XAPIC &&
         !IntelRendezvousWaitForXapicIcr(backend)) {
         InterlockedExchange64(&Context->RendezvousOwnedEpoch, 0);
         IntelRendezvousAbort(
             backend, &backend->Rendezvous.AcquisitionTimeouts);
+        return FALSE;
+    }
+    if (InterlockedCompareExchange(&state->Lifecycle, 0, 0) !=
+        HV_LIFECYCLE_RUNNING) {
+        InterlockedExchange64(&Context->RendezvousOwnedEpoch, 0);
+        IntelRendezvousAbort(backend, NULL);
         return FALSE;
     }
 
@@ -704,6 +795,12 @@ IntelRendezvousBegin(
     InterlockedExchange(
         &backend->Rendezvous.Phase, INTEL_RENDEZVOUS_ACQUIRING);
 
+    if (!IntelRendezvousExpectedNmisConsumed(backend)) {
+        InterlockedExchange64(&Context->RendezvousOwnedEpoch, 0);
+        IntelRendezvousAbort(
+            backend, &backend->Rendezvous.AcquisitionTimeouts);
+        return FALSE;
+    }
     IntelRendezvousPublishExpectedNmis(
         backend, Context->ProcessorIndex, epoch);
     if (participantCount > 1) {

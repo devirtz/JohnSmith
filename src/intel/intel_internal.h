@@ -464,6 +464,12 @@ IntelRendezvousFree(
     _Inout_ INTEL_BACKEND_CONTEXT* Backend
     );
 
+_IRQL_requires_(PASSIVE_LEVEL)
+VOID
+IntelRendezvousQuiesce(
+    _Inout_ INTEL_BACKEND_CONTEXT* Backend
+    );
+
 BOOLEAN
 IntelRendezvousJoinActive(
     _Inout_ INTEL_CPU_CONTEXT* Context

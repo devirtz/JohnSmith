@@ -298,6 +298,16 @@ IntelFreeCpu(
     Cpu->VendorContext = NULL;
 }
 
+_IRQL_requires_(PASSIVE_LEVEL)
+static VOID
+IntelQuiesce(
+    _Inout_ HV_STATE* State
+    )
+{
+    IntelRendezvousQuiesce(
+        (INTEL_BACKEND_CONTEXT*)State->BackendContext);
+}
+
 static BOOLEAN
 IntelCurrentCpuMatches(
     _In_ HV_CPU* Cpu
@@ -554,6 +564,7 @@ static const HV_BACKEND_OPS IntelBackendOps = {
     IntelFree,
     IntelPrepareCpu,
     IntelFreeCpu,
+    IntelQuiesce,
     IntelStart,
     IntelStop,
     IntelReportStartFailure,

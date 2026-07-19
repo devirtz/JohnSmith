@@ -89,6 +89,7 @@ HvIsBackendContractValid(
            Backend->Free != NULL &&
            Backend->PrepareCpu != NULL &&
            Backend->FreeCpu != NULL &&
+           Backend->Quiesce != NULL &&
            Backend->Start != NULL &&
            Backend->Stop != NULL &&
            Backend->ReportStartFailure != NULL &&
@@ -477,6 +478,7 @@ HvStop(
         State->Backend->Name,
         State->CpuCount);
 
+    State->Backend->Quiesce(State);
     HvStopProcessorsOrFail(State, HV_FAIL_STOP_SHUTDOWN);
     IntelHypercallWorkerStop();
     ExWaitForRundownProtectionRelease(&HvPublishRundown);
