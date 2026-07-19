@@ -161,6 +161,7 @@ typedef struct _INTEL_CPU_CONTEXT {
     UCHAR PendingInterruptVector;
     ULONG ProcessorIndex;
     volatile LONG HookRendezvousBudget;
+    volatile LONG RendezvousJoinGuard;
     volatile LONG64 RendezvousJoinedEpoch;
     volatile LONG64 RendezvousPreparedEpoch;
     volatile LONG64 RendezvousAppliedEpoch;
@@ -186,6 +187,7 @@ C_ASSERT((INTEL_EXIT_HISTORY_COUNT & (INTEL_EXIT_HISTORY_COUNT - 1)) == 0);
 C_ASSERT(sizeof(INTEL_EXIT_RECORD) == 64);
 C_ASSERT((FIELD_OFFSET(INTEL_CPU_CONTEXT, ExitSequence) & 7) == 0);
 C_ASSERT((FIELD_OFFSET(INTEL_CPU_CONTEXT, CompletedExitSequence) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(INTEL_CPU_CONTEXT, RendezvousJoinGuard) & 3) == 0);
 C_ASSERT((FIELD_OFFSET(INTEL_CPU_CONTEXT, RendezvousJoinedEpoch) & 7) == 0);
 C_ASSERT((FIELD_OFFSET(INTEL_CPU_CONTEXT, TscOffset) & 7) == 0);
 

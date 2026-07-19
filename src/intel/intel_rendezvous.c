@@ -349,6 +349,82 @@ IntelRendezvousPublishParticipants(
     return count;
 }
 
+static BOOLEAN
+IntelRendezvousWaitForJoinGuards(
+    _In_ const INTEL_BACKEND_CONTEXT* Backend,
+    _In_ ULONG64 Deadline
+    )
+{
+    INTEL_CPU_CONTEXT* context;
+    HV_STATE* state;
+    BOOLEAN guarded;
+    ULONG index;
+
+    state = Backend->State;
+    for (;;) {
+        guarded = FALSE;
+        for (index = 0; index < state->CpuCount; ++index) {
+            if (InterlockedCompareExchange(
+                    &state->Cpus[index].State, 0, 0) != HV_CPU_RUNNING) {
+                continue;
+            }
+            context = (INTEL_CPU_CONTEXT*)state->Cpus[index].VendorContext;
+            if (context != NULL &&
+                InterlockedCompareExchange(
+                    &context->RendezvousJoinGuard, 0, 0) != 0) {
+                guarded = TRUE;
+                break;
+            }
+        }
+        if (!guarded) {
+            return TRUE;
+        }
+        if (IntelRendezvousDeadlineExpired(Deadline)) {
+            return FALSE;
+        }
+        _mm_pause();
+    }
+}
+
+static BOOLEAN
+IntelRendezvousSnapshotMatches(
+    _In_ const INTEL_BACKEND_CONTEXT* Backend,
+    _In_ LONG Phase,
+    _In_ LONG64 Epoch
+    )
+{
+    if (IntelRendezvousReadPhase(Backend) != Phase ||
+        IntelRendezvousReadEpoch(Backend) != Epoch) {
+        return FALSE;
+    }
+    return IntelRendezvousReadPhase(Backend) == Phase;
+}
+
+static BOOLEAN
+IntelRendezvousAdvanceEpoch(
+    _Inout_ volatile LONG64* Marker,
+    _In_ LONG64 Epoch,
+    _Out_ LONG64* Prior
+    )
+{
+    LONG64 observed;
+    LONG64 previous;
+
+    observed = InterlockedCompareExchange64(Marker, 0, 0);
+    for (;;) {
+        *Prior = observed;
+        if (observed >= Epoch) {
+            return FALSE;
+        }
+        previous = InterlockedCompareExchange64(Marker, Epoch, observed);
+        if (previous == observed) {
+            return TRUE;
+        }
+        observed = previous;
+        _mm_pause();
+    }
+}
+
 static VOID
 IntelRendezvousAbort(
     _Inout_ INTEL_BACKEND_CONTEXT* Backend,
@@ -361,9 +437,9 @@ IntelRendezvousAbort(
     InterlockedIncrement64(TimeoutCounter);
     InterlockedExchange(
         &Backend->Rendezvous.Phase, INTEL_RENDEZVOUS_ABORTING);
+    Backend->Rendezvous.OwnerProcessor = INVALID_PROCESSOR_INDEX;
     KeMemoryBarrier();
     InterlockedExchange(&Backend->Rendezvous.Phase, INTEL_RENDEZVOUS_IDLE);
-    Backend->Rendezvous.OwnerProcessor = INVALID_PROCESSOR_INDEX;
 }
 
 static VOID
@@ -396,67 +472,124 @@ IntelRendezvousJoinActive(
     LONG64 epoch;
     LONG64 observed;
     LONG phase;
+    LONG phaseBeforeGuard;
     BOOLEAN joined = FALSE;
+    BOOLEAN result = FALSE;
+    BOOLEAN retry;
 
     backend = IntelRendezvousBackend(Context);
     if (backend == NULL) {
         return FALSE;
     }
     for (;;) {
+        retry = FALSE;
         phase = IntelRendezvousReadPhase(backend);
         if (phase == INTEL_RENDEZVOUS_IDLE) {
             return joined;
         }
         if (phase == INTEL_RENDEZVOUS_CLAIMED) {
+            if (InterlockedCompareExchange(
+                    &Context->RendezvousJoinGuard, 0, 0) != 0) {
+                return TRUE;
+            }
             _mm_pause();
             continue;
         }
-        epoch = IntelRendezvousReadEpoch(backend);
-        if (backend->Rendezvous.OwnerProcessor == Context->ProcessorIndex) {
-            return joined;
+        phaseBeforeGuard = phase;
+        if (InterlockedCompareExchange(
+                &Context->RendezvousJoinGuard, 1, 0) != 0) {
+            return TRUE;
         }
 
-        observed = InterlockedExchange64(
-            &Context->RendezvousJoinedEpoch, epoch);
-        if (observed == epoch) {
-            return TRUE;
+        phase = IntelRendezvousReadPhase(backend);
+        epoch = IntelRendezvousReadEpoch(backend);
+        if (phase == INTEL_RENDEZVOUS_IDLE) {
+            result = joined;
+            goto ReleaseGuard;
+        }
+        if (phase == INTEL_RENDEZVOUS_CLAIMED ||
+            phase != phaseBeforeGuard ||
+            !IntelRendezvousSnapshotMatches(backend, phase, epoch)) {
+            retry = TRUE;
+            goto ReleaseGuard;
+        }
+        if (phase == INTEL_RENDEZVOUS_ABORTING) {
+            result = joined;
+            goto ReleaseGuard;
+        }
+        if (backend->Rendezvous.OwnerProcessor == Context->ProcessorIndex) {
+            result = joined;
+            goto ReleaseGuard;
+        }
+        if (phase != INTEL_RENDEZVOUS_ACQUIRING) {
+            observed = InterlockedCompareExchange64(
+                &Context->RendezvousJoinedEpoch, 0, 0);
+            result = observed >= epoch ? TRUE : joined;
+            goto ReleaseGuard;
+        }
+        if (!IntelRendezvousAdvanceEpoch(
+                &Context->RendezvousJoinedEpoch, epoch, &observed)) {
+            result = observed >= epoch ? TRUE : joined;
+            goto ReleaseGuard;
+        }
+        if (!IntelRendezvousSnapshotMatches(
+                backend, INTEL_RENDEZVOUS_ACQUIRING, epoch)) {
+            result = joined;
+            goto ReleaseGuard;
         }
         InterlockedIncrement(&backend->Rendezvous.ArrivedCount);
         joined = TRUE;
 
         for (;;) {
             if (IntelRendezvousReadEpoch(backend) != epoch) {
-                return joined;
+                result = joined;
+                goto ReleaseGuard;
             }
             phase = IntelRendezvousReadPhase(backend);
             if (phase == INTEL_RENDEZVOUS_IDLE ||
                 phase == INTEL_RENDEZVOUS_ABORTING) {
-                return joined;
+                result = joined;
+                goto ReleaseGuard;
             }
             if (phase == INTEL_RENDEZVOUS_PREPARING) {
-                observed = InterlockedCompareExchange64(
-                    &Context->RendezvousPreparedEpoch, 0, 0);
-                if (observed != epoch &&
-                    InterlockedCompareExchange64(
+                if (IntelRendezvousAdvanceEpoch(
                         &Context->RendezvousPreparedEpoch,
                         epoch,
-                        observed) == observed) {
+                        &observed)) {
+                    if (!IntelRendezvousSnapshotMatches(
+                            backend, INTEL_RENDEZVOUS_PREPARING, epoch)) {
+                        result = joined;
+                        goto ReleaseGuard;
+                    }
                     InterlockedIncrement(&backend->Rendezvous.PreparedCount);
+                } else if (observed > epoch) {
+                    result = joined;
+                    goto ReleaseGuard;
                 }
             } else if (phase == INTEL_RENDEZVOUS_APPLYING) {
                 observed = InterlockedCompareExchange64(
                     &Context->RendezvousAppliedEpoch, 0, 0);
-                if (observed != epoch) {
+                if (observed < epoch) {
                     delta = InterlockedCompareExchange64(
                         &backend->Rendezvous.CompensationDelta, 0, 0);
                     IntelRendezvousApplyOffset(Context, (ULONG64)delta);
-                    if (InterlockedCompareExchange64(
+                    if (IntelRendezvousAdvanceEpoch(
                             &Context->RendezvousAppliedEpoch,
                             epoch,
-                            observed) == observed) {
+                            &observed)) {
+                        if (!IntelRendezvousSnapshotMatches(
+                                backend,
+                                INTEL_RENDEZVOUS_APPLYING,
+                                epoch)) {
+                            result = joined;
+                            goto ReleaseGuard;
+                        }
                         InterlockedIncrement(
                             &backend->Rendezvous.AppliedCount);
                     }
+                } else if (observed > epoch) {
+                    result = joined;
+                    goto ReleaseGuard;
                 }
             } else if (phase == INTEL_RENDEZVOUS_RELEASING) {
                 ULONG64 resumeTsc = (ULONG64)InterlockedCompareExchange64(
@@ -464,10 +597,17 @@ IntelRendezvousJoinActive(
                 while ((LONG64)(__rdtsc() - resumeTsc) < 0) {
                     _mm_pause();
                 }
-                return joined;
+                result = joined;
+                goto ReleaseGuard;
             }
             _mm_pause();
         }
+ReleaseGuard:
+        InterlockedExchange(&Context->RendezvousJoinGuard, 0);
+        if (!retry) {
+            return result;
+        }
+        _mm_pause();
     }
 }
 
@@ -503,8 +643,14 @@ IntelRendezvousBegin(
         _mm_pause();
     }
 
-    epoch = InterlockedIncrement64(&backend->Rendezvous.Epoch);
-    backend->Rendezvous.OwnerProcessor = Context->ProcessorIndex;
+    deadline = (LONG64)(__rdtsc() + backend->RendezvousTimeoutTicks);
+    InterlockedExchange64(&backend->Rendezvous.DeadlineTsc, deadline);
+    if (!IntelRendezvousWaitForJoinGuards(backend, (ULONG64)deadline)) {
+        InterlockedExchange64(&Context->RendezvousOwnedEpoch, 0);
+        IntelRendezvousAbort(
+            backend, &backend->Rendezvous.AcquisitionTimeouts);
+        return FALSE;
+    }
     if (backend->ApicMode == INTEL_APIC_MODE_XAPIC &&
         !IntelRendezvousWaitForXapicIcr(backend)) {
         InterlockedExchange64(&Context->RendezvousOwnedEpoch, 0);
@@ -513,6 +659,8 @@ IntelRendezvousBegin(
         return FALSE;
     }
 
+    epoch = InterlockedIncrement64(&backend->Rendezvous.Epoch);
+    backend->Rendezvous.OwnerProcessor = Context->ProcessorIndex;
     participantCount = IntelRendezvousPublishParticipants(
         backend, Context->ProcessorIndex, epoch);
     backend->Rendezvous.ParticipantCount = participantCount;
@@ -591,11 +739,10 @@ IntelRendezvousFinish(
     InterlockedExchange(
         &backend->Rendezvous.Phase, INTEL_RENDEZVOUS_PREPARING);
 
-    observed = InterlockedCompareExchange64(
-        &Context->RendezvousPreparedEpoch, 0, 0);
-    if (observed != epoch &&
-        InterlockedCompareExchange64(
-            &Context->RendezvousPreparedEpoch, epoch, observed) == observed) {
+    if (IntelRendezvousAdvanceEpoch(
+            &Context->RendezvousPreparedEpoch, epoch, &observed) &&
+        IntelRendezvousSnapshotMatches(
+            backend, INTEL_RENDEZVOUS_PREPARING, epoch)) {
         InterlockedIncrement(&backend->Rendezvous.PreparedCount);
     }
     while ((ULONG)InterlockedCompareExchange(
@@ -612,11 +759,10 @@ IntelRendezvousFinish(
 
     InterlockedExchange(&backend->Rendezvous.Phase, INTEL_RENDEZVOUS_APPLYING);
     IntelRendezvousApplyOffset(Context, delta);
-    observed = InterlockedCompareExchange64(
-        &Context->RendezvousAppliedEpoch, 0, 0);
-    if (observed != epoch &&
-        InterlockedCompareExchange64(
-            &Context->RendezvousAppliedEpoch, epoch, observed) == observed) {
+    if (IntelRendezvousAdvanceEpoch(
+            &Context->RendezvousAppliedEpoch, epoch, &observed) &&
+        IntelRendezvousSnapshotMatches(
+            backend, INTEL_RENDEZVOUS_APPLYING, epoch)) {
         InterlockedIncrement(&backend->Rendezvous.AppliedCount);
     }
     while ((ULONG)InterlockedCompareExchange(
@@ -644,6 +790,7 @@ IntelRendezvousFinish(
     }
     InterlockedExchange64(&Context->RendezvousOwnedEpoch, 0);
     backend->Rendezvous.OwnerProcessor = INVALID_PROCESSOR_INDEX;
+    KeMemoryBarrier();
     InterlockedExchange(&backend->Rendezvous.Phase, INTEL_RENDEZVOUS_IDLE);
 }
 
