@@ -320,6 +320,7 @@ HvStart(
     )
 {
     const HV_BACKEND_OPS* backend;
+    BOOLEAN intelBackend;
     HV_CPU* cpu;
     ULONG preparedCount = 0;
     ULONG cpuCount;
@@ -355,6 +356,7 @@ HvStart(
         status = STATUS_NOT_SUPPORTED;
         goto FailLifecycle;
     }
+    intelBackend = backend == HvIntelGetBackendOps();
 
     status = backend->Support();
     if (!NT_SUCCESS(status)) {
@@ -411,14 +413,18 @@ HvStart(
         goto FailPreparedCpus;
     }
 
-    status = IntelHypercallWorkerStart();
-    if (!NT_SUCCESS(status)) {
-        goto FailIntrospection;
+    if (intelBackend) {
+        status = IntelHypercallWorkerStart();
+        if (!NT_SUCCESS(status)) {
+            goto FailIntrospection;
+        }
     }
 
     status = HvStartProcessors(&HvGlobalState);
     if (!NT_SUCCESS(status)) {
-        IntelHypercallWorkerStop();
+        if (intelBackend) {
+            IntelHypercallWorkerStop();
+        }
         HvStopProcessorsOrFail(&HvGlobalState, HV_FAIL_STOP_ROLLBACK);
         goto FailIntrospection;
     }
@@ -478,7 +484,9 @@ HvStop(
         State->Backend->Name,
         State->CpuCount);
 
-    IntelHypercallWorkerStop();
+    if (State->Backend == HvIntelGetBackendOps()) {
+        IntelHypercallWorkerStop();
+    }
     State->Backend->Quiesce(State);
     HvStopProcessorsOrFail(State, HV_FAIL_STOP_SHUTDOWN);
     ExWaitForRundownProtectionRelease(&HvPublishRundown);
