@@ -416,16 +416,12 @@ IntelRendezvousJoinActive(
             return joined;
         }
 
-        observed = InterlockedCompareExchange64(
-            &Context->RendezvousJoinedEpoch, 0, 0);
-        if (observed != epoch) {
-            if (InterlockedCompareExchange64(
-                    &Context->RendezvousJoinedEpoch,
-                    epoch,
-                    observed) == observed) {
-                InterlockedIncrement(&backend->Rendezvous.ArrivedCount);
-            }
+        observed = InterlockedExchange64(
+            &Context->RendezvousJoinedEpoch, epoch);
+        if (observed == epoch) {
+            return TRUE;
         }
+        InterlockedIncrement(&backend->Rendezvous.ArrivedCount);
         joined = TRUE;
 
         for (;;) {
