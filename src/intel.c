@@ -508,6 +508,15 @@ IntelStop(
         return STATUS_INVALID_DEVICE_STATE;
     }
     context = (INTEL_CPU_CONTEXT*)Cpu->VendorContext;
+    if (InterlockedCompareExchange64(
+            &context->RendezvousOwnedEpoch, 0, 0) != 0) {
+        KeBugCheckEx(
+            HYPERVISOR_ERROR,
+            INTEL_BUGCHECK_RENDEZVOUS,
+            Cpu->ProcessorIndex,
+            context->RendezvousOwnedEpoch,
+            INTEL_VMEXIT_STOP);
+    }
     if (!context->Launched) {
         return STATUS_SUCCESS;
     }

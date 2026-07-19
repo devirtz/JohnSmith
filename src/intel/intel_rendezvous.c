@@ -680,6 +680,13 @@ IntelRendezvousBegin(
     epoch = InterlockedIncrement64(&backend->Rendezvous.Epoch);
     backend->Rendezvous.OwnerProcessor = Context->ProcessorIndex;
     participantCount = IntelRendezvousCountParticipants(backend);
+    if (participantCount == 0 ||
+        Context->ProcessorIndex >= state->CpuCount) {
+        InterlockedExchange64(&Context->RendezvousOwnedEpoch, 0);
+        IntelRendezvousAbort(
+            backend, &backend->Rendezvous.AcquisitionTimeouts);
+        return FALSE;
+    }
     backend->Rendezvous.ParticipantCount = participantCount;
     InterlockedExchange(&backend->Rendezvous.ArrivedCount, 1);
     InterlockedExchange(&backend->Rendezvous.PreparedCount, 0);
