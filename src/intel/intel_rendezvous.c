@@ -319,7 +319,30 @@ IntelRendezvousConsumeExpectedNmi(
 }
 
 static ULONG
-IntelRendezvousPublishParticipants(
+IntelRendezvousCountParticipants(
+    _In_ const INTEL_BACKEND_CONTEXT* Backend
+    )
+{
+    HV_STATE* state;
+    ULONG count = 0;
+    ULONG index;
+
+    state = Backend->State;
+    for (index = 0; index < state->CpuCount; ++index) {
+        if (InterlockedCompareExchange(&state->Cpus[index].State, 0, 0) !=
+            HV_CPU_RUNNING) {
+            continue;
+        }
+        if (state->Cpus[index].VendorContext == NULL) {
+            continue;
+        }
+        ++count;
+    }
+    return count;
+}
+
+static VOID
+IntelRendezvousPublishExpectedNmis(
     _Inout_ INTEL_BACKEND_CONTEXT* Backend,
     _In_ ULONG OwnerProcessor,
     _In_ LONG64 Epoch
@@ -327,7 +350,6 @@ IntelRendezvousPublishParticipants(
 {
     INTEL_CPU_CONTEXT* context;
     HV_STATE* state;
-    ULONG count = 0;
     ULONG index;
 
     state = Backend->State;
@@ -340,13 +362,11 @@ IntelRendezvousPublishParticipants(
         if (context == NULL) {
             continue;
         }
-        ++count;
         if (index != OwnerProcessor) {
             InterlockedExchange64(
                 &context->RendezvousExpectedNmiEpoch, Epoch);
         }
     }
-    return count;
 }
 
 static BOOLEAN
@@ -659,8 +679,7 @@ IntelRendezvousBegin(
 
     epoch = InterlockedIncrement64(&backend->Rendezvous.Epoch);
     backend->Rendezvous.OwnerProcessor = Context->ProcessorIndex;
-    participantCount = IntelRendezvousPublishParticipants(
-        backend, Context->ProcessorIndex, epoch);
+    participantCount = IntelRendezvousCountParticipants(backend);
     backend->Rendezvous.ParticipantCount = participantCount;
     InterlockedExchange(&backend->Rendezvous.ArrivedCount, 1);
     InterlockedExchange(&backend->Rendezvous.PreparedCount, 0);
@@ -674,6 +693,8 @@ IntelRendezvousBegin(
     InterlockedExchange(
         &backend->Rendezvous.Phase, INTEL_RENDEZVOUS_ACQUIRING);
 
+    IntelRendezvousPublishExpectedNmis(
+        backend, Context->ProcessorIndex, epoch);
     if (participantCount > 1) {
         IntelRendezvousBroadcastNmi(backend);
     }
