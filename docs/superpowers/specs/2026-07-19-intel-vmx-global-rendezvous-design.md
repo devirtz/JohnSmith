@@ -40,7 +40,7 @@ instructions exit. The rendezvous policy applies if those exits occur.
 An NMI broadcast cannot carry a private vector or source identifier. During an
 epoch, the owner publishes an expected epoch to each target before broadcast.
 The first NMI on that CPU consumes the marker even if delivery occurs after the
-CPU joined through another exit or the root-mode callback. An outstanding
+CPU joined through another exit or the pre-resume check. An outstanding
 marker from a real broadcast therefore intentionally consumes the first later
 NMI. Any unrelated physical NMI may satisfy or coalesce with the marker. This
 approved first-NMI assumption is an architectural limitation of using NMIs as
@@ -48,12 +48,12 @@ the forced-exit mechanism.
 
 After changing the phase to `Claimed`, the owner first drains per-CPU join
 guards left by the prior epoch. In xAPIC mode it also waits for ICR delivery
-status to become idle while still `Claimed`. It then resets the epoch and
-counters, makes `Acquiring` visible, publishes the new expected epoch to each
-target, and broadcasts. An xAPIC readiness timeout aborts before marker arming
-and before the ICR write, so a no-send failure cannot leave stale expected
-markers. NMIs without an outstanding expected marker retain the existing
-virtual-NMI reinjection behavior.
+status to become idle while still `Claimed`. It then advances the epoch and
+resets the counters, makes `Acquiring` visible, publishes the new expected
+epoch to each target, and broadcasts. An xAPIC readiness timeout aborts before
+marker arming and before the ICR write, so a no-send failure cannot leave stale
+expected markers. NMIs without an outstanding expected marker retain the
+existing virtual-NMI reinjection behavior.
 
 ### A processor may already be in VMX-root mode
 
@@ -309,8 +309,8 @@ offsets would corrupt guest time.
 All phase transitions use interlocked operations or explicit barriers:
 
 - `Claimed` excludes another owner while metadata is constructed;
-- prior per-CPU join guards drain while `Claimed`, before epoch and counter
-  reset;
+- prior per-CPU join guards drain while `Claimed`, before epoch advancement
+  and counter reset;
 - owner metadata is released before `Acquiring` becomes observable;
 - target expected-epoch markers are armed after `Acquiring` is visible and
   before the ICR write;
@@ -355,8 +355,10 @@ The portable self-check in `tools/intel-rendezvous-policy-selfcheck.c` covers:
 
 - mandatory, conditional, and excluded classification;
 - exact eight-exit budget consumption;
+- budget preservation across excluded exits;
 - ICR-low encoding;
-- mandatory VMCS control masks.
+- required NMI-exiting and virtual-NMI pin-control bits;
+- the required TSC-offset primary-control bit.
 
 Bare-metal verification must record the processor model, APIC mode, active
 logical-processor count, build hash, and configuration. It must cover:

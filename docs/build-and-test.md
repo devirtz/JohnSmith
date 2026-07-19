@@ -102,9 +102,11 @@ cl /nologo /std:c17 /W4 /WX /TC /I .\src\intel `
 & "$env:TEMP\johnsmith-rendezvous-policy-selfcheck.exe"
 ```
 
-It covers policy, exact budget behavior, exclusions, ICR encoding, and
-mandatory control masks. The hardware-only boundary is LAPIC delivery, NMI
-callback timing, VMCS writes, timeout release, and resume skew.
+It covers policy classification, exact budget behavior, excluded-exit budget
+preservation, ICR encoding, the required NMI-exiting and virtual-NMI pin-control
+bits, and the required TSC-offset primary-control bit. The hardware-only
+boundary is LAPIC delivery, NMI callback timing, VMCS writes, timeout release,
+and resume skew.
 
 ## Pull-request checklist
 
