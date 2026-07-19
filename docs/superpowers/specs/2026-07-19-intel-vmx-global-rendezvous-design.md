@@ -3,9 +3,9 @@
 ## Goal
 
 Add a bounded-latency Intel VMX-root rendezvous that pauses every running
-logical processor around timing-sensitive VM exits, compensates the interval
-during which the complete topology is frozen, and resumes processors with a
-shared TSC deadline.
+logical processor around timing-sensitive VM exits, compensates the
+synchronized emulation interval from fully-frozen arrival until owner Finish
+begins `Preparing`, and resumes processors with a shared TSC deadline.
 
 The implementation supports both legacy xAPIC MMIO and x2APIC MSR delivery.
 It does not claim cycle-identical `VMRESUME` execution: APIC delivery, cache
@@ -44,14 +44,17 @@ CPU joined through another exit or the pre-resume check. An outstanding
 marker from a real broadcast therefore intentionally consumes the first later
 NMI. Any unrelated physical NMI may satisfy or coalesce with the marker. This
 approved first-NMI assumption is an architectural limitation of using NMIs as
-the forced-exit mechanism.
+the forced-exit mechanism. Hardware validation of that assumption remains required.
 
 After changing the phase to `Claimed`, the owner first drains per-CPU join
-guards left by the prior epoch. In xAPIC mode it also waits for ICR delivery
-status to become idle while still `Claimed`. It then advances the epoch and
-resets the counters, makes `Acquiring` visible, publishes the new expected
-epoch to each target, and broadcasts. An xAPIC readiness timeout aborts before
-marker arming and before the ICR write, so a no-send failure cannot leave stale
+guards and expected-NMI markers left by the prior epoch. In xAPIC mode it also
+waits for ICR delivery status to become idle while still `Claimed`. It then
+rechecks that lifecycle is `RUNNING`; a stop race aborts fail open before epoch
+advancement, marker publication, or send. It then advances the epoch and
+resets the counters, makes `Acquiring` visible, defensively rechecks that old
+markers remain consumed, publishes the new expected epoch to each target, and
+broadcasts. Marker-drain or xAPIC-readiness timeout aborts before marker arming
+and before the ICR write, so a no-send failure cannot overwrite or leave stale
 expected markers. NMIs without an outstanding expected marker retain the
 existing virtual-NMI reinjection behavior.
 
@@ -76,6 +79,12 @@ The protocol compensates only the interval beginning after every participant
 has joined. Subtracting time beginning at the initial broadcast could move a
 late target's guest-visible TSC backward because that target may have executed
 guest instructions after the broadcast but before accepting the NMI.
+
+The endpoint is when owner Finish captures the delta immediately before
+publishing `Preparing`. Preparation, coordinated VMCS offset application, the
+release lead, and final restoration/`VMRESUME` overhead are not subtracted and
+remain guest-visible. The implementation does not remove the complete frozen
+or exit-handling duration.
 
 All participants subtract the same delta. Per-CPU deltas are prohibited
 because they would create a cross-core TSC discontinuity.
@@ -222,8 +231,9 @@ them to one of these classes.
 
 1. The triggering processor first joins any already-active epoch.
 2. It atomically changes the shared phase from `Idle` to `Claimed`.
-3. While `Claimed`, it waits for all prior per-CPU join guards to drain and, in
-   xAPIC mode, verifies that the ICR is ready.
+3. While `Claimed`, it waits for all prior per-CPU join guards and expected-NMI
+   markers to drain, verifies the xAPIC ICR when needed, and rechecks that
+   lifecycle is `RUNNING`.
 4. It increments the epoch and publishes its processor index and metadata.
 5. It snapshots processors whose state is `HV_CPU_RUNNING`. The participant
    count includes the owner; arrived count starts at one.
@@ -278,6 +288,9 @@ After emulation, the owner:
    globally visible. The next owner uses a new epoch, so late readers cannot be
    mistaken for participants in the next rendezvous.
 
+The delta in step 1 covers only fully-frozen arrival through the start of
+`Preparing`. Steps 3 through 9 remain guest-visible overhead.
+
 The final TSC spin is placed as close as practical to the common `VMRESUME`
 sequence. Guest register values are preserved across the wait.
 
@@ -311,6 +324,7 @@ All phase transitions use interlocked operations or explicit barriers:
 - `Claimed` excludes another owner while metadata is constructed;
 - prior per-CPU join guards drain while `Claimed`, before epoch advancement
   and counter reset;
+- prior expected-NMI markers drain before a new marker is published;
 - owner metadata is released before `Acquiring` becomes observable;
 - target expected-epoch markers are armed after `Acquiring` is visible and
   before the ICR write;
@@ -332,10 +346,15 @@ calibrates deadline ticks, initializes the rendezvous record, and stores the
 `HV_STATE` pointer. Per-CPU preparation initializes local epochs, offsets, and
 hook budgets.
 
-Teardown begins only after common lifecycle rendezvous has stopped every VMX
-processor. It verifies that the rendezvous phase is `Idle`, deregisters the NMI
-callback, clears state, and unmaps xAPIC MMIO. A non-idle phase during teardown
-is an invariant violation and follows the existing fail-stop teardown policy.
+After common changes lifecycle from `RUNNING` to `STOPPING`, it calls the
+backend's passive-level quiesce hook before changing any per-CPU state or
+executing VMXOFF. Intel quiesce waits for rendezvous phase `Idle` and for every
+expected-NMI marker to be consumed. The post-claim lifecycle recheck prevents
+new epochs while stop is pending. A quiesce timeout is fail stop.
+
+Common then stops every VMX processor. The NMI callback remains registered
+through this step; backend teardown deregisters it only after CPU stop and
+per-CPU context release, then clears state and unmaps xAPIC MMIO.
 
 CPU hot-add after launch remains unsupported. The participant snapshot uses the
 startup CPU array and `HV_CPU_RUNNING` states.

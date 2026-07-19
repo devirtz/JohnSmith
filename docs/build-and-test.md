@@ -10,11 +10,11 @@
 ## Build configurations
 
 
-| Configuration | Diagnostics | CPUID fast path | VMCALL floor |
+| Configuration | Diagnostics | CPUID handler | VMCALL fast path |
 | --- | --- | --- | --- |
-| Debug | Enabled | Disabled | Disabled |
-| Release | Disabled | Enabled | Disabled |
-| Benchmark | Disabled | Enabled | Enabled |
+| Debug | Enabled | C | Disabled |
+| Release | Disabled | C | Disabled |
+| Benchmark | Disabled | C | Enabled |
 
 Build from a Visual Studio developer shell:
 

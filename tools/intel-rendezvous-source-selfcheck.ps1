@@ -9,6 +9,12 @@ $intelSource = Get-Content -Raw (Join-Path $Root 'src/intel.c')
 $intelExitSource = Get-Content -Raw (Join-Path $Root 'src/intel/intel_exit.c')
 $rendezvousSource = Get-Content -Raw `
     (Join-Path $Root 'src/intel/intel_rendezvous.c')
+$architectureDoc = Get-Content -Raw `
+    (Join-Path $Root 'docs/architecture/intel-vmx.md')
+$designDoc = Get-Content -Raw `
+    (Join-Path $Root `
+        'docs/superpowers/specs/2026-07-19-intel-vmx-global-rendezvous-design.md')
+$buildDoc = Get-Content -Raw (Join-Path $Root 'docs/build-and-test.md')
 
 function Assert-Contains {
     param(
@@ -18,6 +24,18 @@ function Assert-Contains {
     )
 
     if (-not $Text.Contains($Needle)) {
+        throw $Failure
+    }
+}
+
+function Assert-NotContains {
+    param(
+        [string]$Text,
+        [string]$Needle,
+        [string]$Failure
+    )
+
+    if ($Text.Contains($Needle)) {
         throw $Failure
     }
 }
@@ -65,3 +83,21 @@ $setPrimary = $intelExitSource.Substring(
     $setPrimaryStart, $setPrimaryEnd - $setPrimaryStart)
 Assert-Contains $setPrimary 'KeBugCheckEx(' `
     'IntelSetPrimaryControl silently ignores VMWRITE failure.'
+
+Assert-NotContains $architectureDoc `
+    'Release and Benchmark configurations can use the assembly fast path' `
+    'Intel architecture documentation still claims a Release CPUID fast path.'
+Assert-Contains $architectureDoc `
+    'Only Benchmark enables the guarded assembly VMCALL fast path.' `
+    'Intel architecture documentation lacks the Benchmark-only VMCALL boundary.'
+Assert-Contains $architectureDoc `
+    'Preparation, VMCS apply coordination, the release lead, and final resume overhead remain guest-visible.' `
+    'Intel architecture documentation overstates TSC compensation.'
+Assert-Contains $architectureDoc `
+    'outstanding expected-NMI markers are consumed before VMXOFF' `
+    'Intel architecture documentation lacks lifecycle marker drain.'
+Assert-Contains $designDoc `
+    'Hardware validation of that assumption remains required.' `
+    'The approved first-NMI assumption lacks a hardware-validation boundary.'
+Assert-NotContains $buildDoc '| Release | Disabled | Enabled | Disabled |' `
+    'The build matrix still claims a Release CPUID fast path.'
