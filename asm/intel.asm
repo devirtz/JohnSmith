@@ -81,6 +81,7 @@ IntelInvvpidFailed:
 IntelAsmInvvpid ENDP
 
 IntelAsmVmExit PROC
+IF JOHNSMITH_VMEXIT_BENCHMARK
     ; Handle the benchmark VMCALL without constructing a C ABI frame.
     push r8
     push r9
@@ -97,7 +98,6 @@ IntelAsmVmExit PROC
     cmp r9d, VMX_EXIT_CPUID
     je IntelVmExitSlowPath
 
-IF JOHNSMITH_VMEXIT_BENCHMARK
     cmp r9d, VMX_EXIT_VMCALL
     jne IntelVmExitSlowPath
     mov r8, 04A534D5642454E43h
@@ -120,11 +120,7 @@ IF JOHNSMITH_VMEXIT_BENCHMARK
     ; Deliberately minimal, benchmark-only VMCALL completion.  This measures
     ; VM-exit + RIP advancement + VMRESUME without entering C.
     jmp IntelVmExitBenchmarkAdvanceRip
-ELSE
-    jmp IntelVmExitSlowPath
-ENDIF
 
-IF JOHNSMITH_VMEXIT_BENCHMARK
 IntelVmExitBenchmarkAdvanceRip:
     mov r8d, VMCS_EXIT_INSTRUCTION_LENGTH
     vmread r11, r8
@@ -136,7 +132,6 @@ IntelVmExitBenchmarkAdvanceRip:
     vmwrite r9, r8
     jbe IntelVmExitSlowPath
     jmp IntelVmExitFastResume
-ENDIF
 
 IntelVmExitFastResume:
     pop r11
@@ -145,12 +140,15 @@ IntelVmExitFastResume:
     pop r8
     vmresume
     ud2
+ENDIF
 
 IntelVmExitSlowPath:
+IF JOHNSMITH_VMEXIT_BENCHMARK
     pop r11
     pop r10
     pop r9
     pop r8
+ENDIF
 
     ; Snapshot guest CR2 before any host code path can fault and clobber it.
     ; VMX does not save or restore CR2, so host CR2 == guest CR2 on VM exit
