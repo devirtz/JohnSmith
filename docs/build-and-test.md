@@ -63,6 +63,45 @@ invalidates code-to-log conclusions.
 .\build\bin\tools\vmexit-bench.exe 200000
 ```
 
+For the Intel CPUID rendezvous gate, use one Release artifact set on one
+bare-metal platform. Confirm JohnSmith is not running before preparing the
+artifact set:
+
+```powershell
+sc.exe query JohnSmith
+```
+
+Do not proceed if the service reports `RUNNING`. Stop it, repeat the query, and
+then copy the intended Release driver beside `johnsmithctl.exe`. Record the
+driver artifact that will be loaded and the benchmark artifact before the five
+inactive samples:
+
+```powershell
+Copy-Item .\build\bin\Release\JohnSmith.sys .\build\bin\tools\JohnSmith.sys -Force
+Get-FileHash .\build\bin\tools\JohnSmith.sys -Algorithm SHA256
+Get-FileHash .\build\bin\tools\vmexit-bench.exe -Algorithm SHA256
+1..5 | ForEach-Object { .\build\bin\tools\vmexit-bench.exe 200000 }
+```
+
+Start JohnSmith without installing or probing hooks, then run five active
+samples. Before those runs, record the loaded service path and both hashes:
+
+```powershell
+.\build\bin\tools\johnsmithctl.exe start --cpu 0
+sc.exe qc JohnSmith
+Get-FileHash .\build\bin\tools\JohnSmith.sys -Algorithm SHA256
+Get-FileHash .\build\bin\tools\vmexit-bench.exe -Algorithm SHA256
+1..5 | ForEach-Object { .\build\bin\tools\vmexit-bench.exe 200000 }
+```
+
+`BINARY_PATH_NAME` must resolve to `build\bin\tools\JohnSmith.sys`, and both
+hashes must match the artifacts recorded for the inactive runs. Use the same
+platform for both sets; any mismatch invalidates the comparison.
+
+The median active CPUID leaf-0 `ratio(trim)` must be no greater than 10. CPUID
+leaf 16h is informational and is not judged against this gate because the
+project's recorded reference bare-metal leaf-16 ratio already exceeds 10.
+
 For the transition floor:
 
 ```powershell
@@ -102,11 +141,11 @@ cl /nologo /std:c17 /W4 /WX /TC /I .\src\intel `
 & "$env:TEMP\johnsmith-rendezvous-policy-selfcheck.exe"
 ```
 
-It covers policy classification, exact budget behavior, excluded-exit budget
-preservation, ICR encoding, the required NMI-exiting and virtual-NMI pin-control
-bits, and the required TSC-offset primary-control bit. The hardware-only
-boundary is LAPIC delivery, NMI callback timing, VMCS writes, timeout release,
-and resume skew.
+It covers policy classification, CPUID conditional behavior inside and outside
+the eight-exit window, exact budget behavior, excluded-exit budget preservation,
+ICR encoding, the required NMI-exiting and virtual-NMI pin-control bits, and the
+required TSC-offset primary-control bit. The hardware-only boundary is LAPIC
+delivery, NMI callback timing, VMCS writes, timeout release, and resume skew.
 
 ## Pull-request checklist
 

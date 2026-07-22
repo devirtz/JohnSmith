@@ -15,7 +15,12 @@ main(void)
 
     assert(INTEL_RENDEZVOUS_ICR_LOW == 0x000C4400u);
     assert(IntelRendezvousClassifyPolicy(
-        INTEL_POLICY_EXIT_CPUID, 0, 0) == INTEL_POLICY_MANDATORY);
+        INTEL_POLICY_EXIT_CPUID, 0, 0) == INTEL_POLICY_NONE);
+    assert(IntelRendezvousClassifyPolicy(
+        INTEL_POLICY_EXIT_CPUID, 0, 1) == INTEL_POLICY_CONDITIONAL);
+    assert(IntelRendezvousClassifyPolicy(
+        INTEL_POLICY_EXIT_CPUID, 0, INTEL_RENDEZVOUS_HOOK_BUDGET) ==
+        INTEL_POLICY_CONDITIONAL);
     assert(IntelRendezvousClassifyPolicy(
         INTEL_POLICY_EXIT_RDTSC, 0, 0) == INTEL_POLICY_MANDATORY);
     assert(IntelRendezvousClassifyPolicy(
@@ -55,11 +60,16 @@ main(void)
 
     budget = INTEL_RENDEZVOUS_HOOK_BUDGET;
     for (index = 0; index < INTEL_RENDEZVOUS_HOOK_BUDGET; ++index) {
+        assert(IntelRendezvousClassifyPolicy(
+            INTEL_POLICY_EXIT_CPUID, 0, budget) ==
+            INTEL_POLICY_CONDITIONAL);
         budget = IntelRendezvousConsumeBudget(
             INTEL_POLICY_EXIT_CPUID, budget);
         assert(budget == INTEL_RENDEZVOUS_HOOK_BUDGET - index - 1);
     }
     assert(budget == 0);
+    assert(IntelRendezvousClassifyPolicy(
+        INTEL_POLICY_EXIT_CPUID, 0, budget) == INTEL_POLICY_NONE);
     assert(IntelRendezvousConsumeBudget(
         INTEL_POLICY_EXIT_CPUID, budget) == 0);
     assert(IntelRendezvousConsumeBudget(

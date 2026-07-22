@@ -42,13 +42,13 @@ ICR-low `0x000C4400` through xAPIC MMIO offset `0x300` or x2APIC MSR `0x830`.
 NMI exiting handles targets in VMX non-root mode; a registered Windows NMI
 callback handles targets already in VMX-root mode.
 
-CPUID, EPT violations, intercepted RDTSC/RDTSCP, and intercepted
-`RDMSR(0x10)` are mandatory rendezvous exits. A successful hook-policy match
-reloads the local budget to eight, and each subsequent non-excluded exit
-decrements it. Mandatory exits still rendezvous and consume budget. External
-interrupts, MTF, and the VMX-preemption timer neither start a rendezvous nor
-consume budget. Control-register, other MSR, GDTR/IDTR, and LDTR/TR exits
-rendezvous only while the budget is nonzero.
+EPT violations, intercepted RDTSC/RDTSCP, and intercepted `RDMSR(0x10)` are
+mandatory rendezvous exits. A matched hook EPT violation reloads the per-CPU
+budget to exactly eight, and each subsequent non-excluded exit, including
+CPUID, decrements it. Mandatory exits still rendezvous and consume budget.
+External interrupts, MTF, and the VMX-preemption timer neither start a
+rendezvous nor consume budget. CPUID, control-register, other MSR, GDTR/IDTR,
+and LDTR/TR exits rendezvous only when the budget was nonzero at exit entry.
 
 The compensated interval starts when every participant has arrived and ends
 when owner Finish captures the delta immediately before publishing `Preparing`.
@@ -71,7 +71,14 @@ no-send failure from leaving stale markers.
 
 CPUID exits are emulated through the C handler in Debug, Release, and
 Benchmark. The policy hides VMX exposure, applies the enabled INVPCID, XSAVES,
-and RDTSCP masks, and preserves native topology and OS-dependent results. Only Benchmark enables the guarded assembly VMCALL fast path.
+and RDTSCP masks, and preserves native topology and OS-dependent results.
+Outside hook proximity, benign CPUID still VM-exits through this path but does
+not acquire a global rendezvous or broadcast NMIs. Only Benchmark enables the
+guarded assembly VMCALL fast path.
+
+This policy change adds no artificial jitter, broad CPUID cache, forced
+`CPUID.80000007H:EDX[8]`, assembly CPUID fast path, new `Draining` phase, or
+change to NMI, APIC, or timeout behavior.
 
 ## EPT and VPID
 

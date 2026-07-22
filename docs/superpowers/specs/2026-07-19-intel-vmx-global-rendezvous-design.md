@@ -170,9 +170,10 @@ Startup fails with the existing control-mismatch diagnostics if any required
 control is unavailable. `VMCS_TSC_OFFSET` is initialized from the per-CPU
 cumulative offset, initially zero.
 
-The current assembly CPUID fast path cannot bypass rendezvous classification.
-Mandatory CPUID exits therefore use the common handler. Benchmark-only VMCALL
-handling remains independent but must execute the pre-`VMRESUME` join check.
+CPUID exits use the existing C emulation and masking path. Outside hook
+proximity, benign CPUID still causes a VM exit but does not acquire a global
+rendezvous or broadcast NMIs. Benchmark-only VMCALL handling remains
+independent but must execute the pre-`VMRESUME` join check.
 
 ## Exit classification
 
@@ -183,7 +184,6 @@ captured, but before timing-sensitive emulation or EPT mutation begins.
 
 These exits always request ownership of a rendezvous epoch:
 
-- CPUID, basic reason 10;
 - EPT violation, basic reason 48;
 - RDTSC, basic reason 16, when intercepted;
 - RDTSCP, basic reason 51, when intercepted;
@@ -198,16 +198,22 @@ are serialized rather than nested.
 These exits request rendezvous only when the processor's hook-proximity budget
 was nonzero at exit entry:
 
+- CPUID, basic reason 10;
 - control-register access, basic reason 28;
 - RDMSR or WRMSR, basic reasons 31 and 32, except the mandatory TSC read;
 - descriptor-table access, basic reasons 46 and 47, if existing or future VMCS
   controls make those exits reachable.
 
-A hook-related EPT violation that matches an installed hook policy reloads the
-local budget to eight. Each subsequent non-excluded VM exit consumes one unit
-after classification. Mandatory exits consume budget but remain mandatory.
-Excluded exits neither trigger rendezvous nor consume budget. This defines
-proximity in deterministic exit count rather than guest-visible time.
+A hook-related EPT violation that matches an installed hook policy is mandatory
+and reloads the per-CPU budget to exactly eight. Each subsequent non-excluded
+VM exit, including CPUID, consumes one unit after classification. Mandatory
+exits consume budget but remain mandatory. Excluded exits neither trigger
+rendezvous nor consume budget. This defines proximity in deterministic exit
+count rather than guest-visible time.
+
+This policy change does not add artificial jitter, a broad CPUID cache, a
+forced `CPUID.80000007H:EDX[8]` value, an assembly CPUID fast path, a new
+`Draining` phase, or any change to NMI, APIC, or timeout behavior.
 
 ### Strictly excluded rendezvous
 
@@ -372,7 +378,8 @@ Build-time verification covers:
 
 The portable self-check in `tools/intel-rendezvous-policy-selfcheck.c` covers:
 
-- mandatory, conditional, and excluded classification;
+- mandatory, conditional, and excluded classification, including CPUID both
+  inside and outside the eight-exit window;
 - exact eight-exit budget consumption;
 - budget preservation across excluded exits;
 - ICR-low encoding;
@@ -383,13 +390,20 @@ Bare-metal verification must record the processor model, APIC mode, active
 logical-processor count, build hash, and configuration. It must cover:
 
 - xAPIC and x2APIC broadcasts;
-- CPUID and EPT mandatory rendezvous;
-- conditional CR/MSR behavior inside and outside the eight-exit window;
+- mandatory EPT, RDTSC, RDTSCP, and `RDMSR(IA32_TSC)` rendezvous;
+- conditional CPUID and CR/MSR behavior inside and outside the eight-exit
+  window;
 - excluded external-interrupt, MTF, and preemption-timer behavior;
 - concurrent mandatory exits on multiple processors;
 - timeout release with an intentionally withheld participant;
 - guest TSC monotonicity and cross-core skew before and after compensation;
 - repeated start/stop teardown.
+
+The CPUID performance gate uses the same Release artifact and bare-metal
+platform for five inactive 200000-sample runs and five active runs with no hook
+activity. The median active CPUID leaf-0 `ratio(trim)` must be no greater than
+10. CPUID leaf 16h is informational and is not judged against this gate because
+the recorded bare-metal leaf-16 ratio already exceeds 10.
 
 Build success alone is not runtime proof for LAPIC delivery, VMCS timing, or
 cross-core resume skew.
