@@ -3,9 +3,9 @@
 ## Goal
 
 Add a bounded-latency Intel VMX-root rendezvous that pauses every running
-logical processor around timing-sensitive VM exits, compensates the interval
-during which the complete topology is frozen, and resumes processors with a
-shared TSC deadline.
+logical processor around timing-sensitive VM exits, compensates the
+synchronized emulation interval from fully-frozen arrival until owner Finish
+begins `Preparing`, and resumes processors with a shared TSC deadline.
 
 The implementation supports both legacy xAPIC MMIO and x2APIC MSR delivery.
 It does not claim cycle-identical `VMRESUME` execution: APIC delivery, cache
@@ -38,27 +38,40 @@ instructions exit. The rendezvous policy applies if those exits occur.
 ### NMI delivery has no software tag
 
 An NMI broadcast cannot carry a private vector or source identifier. During an
-armed epoch, the first NMI exit observed by a non-owner processor that has not
-joined that epoch is treated as the rendezvous NMI and is not injected into the
-guest. Any unrelated physical NMI arriving in the same interval may coalesce
-with the rendezvous NMI. This is an architectural limitation of using NMIs as
-the forced-exit mechanism.
+epoch, the owner publishes an expected epoch to each target before broadcast.
+The first NMI on that CPU consumes the marker even if delivery occurs after the
+CPU joined through another exit or the pre-resume check. An outstanding
+marker from a real broadcast therefore intentionally consumes the first later
+NMI. Any unrelated physical NMI may satisfy or coalesce with the marker. This
+approved first-NMI assumption is an architectural limitation of using NMIs as
+the forced-exit mechanism. Hardware validation of that assumption remains required.
 
-NMIs received outside an armed epoch retain the existing virtual-NMI
-reinjection behavior.
+After changing the phase to `Claimed`, the owner first drains per-CPU join
+guards and expected-NMI markers left by the prior epoch. In xAPIC mode it also
+waits for ICR delivery status to become idle while still `Claimed`. It then
+rechecks that lifecycle is `RUNNING`; a stop race aborts fail open before epoch
+advancement, marker publication, or send. It then advances the epoch and
+resets the counters, makes `Acquiring` visible, defensively rechecks that old
+markers remain consumed, publishes the new expected epoch to each target, and
+broadcasts. Marker-drain or xAPIC-readiness timeout aborts before marker arming
+and before the ICR write, so a no-send failure cannot overwrite or leave stale
+expected markers. NMIs without an outstanding expected marker retain the
+existing virtual-NMI reinjection behavior.
 
 ### A processor may already be in VMX-root mode
 
 NMI exiting only forces processors that are in VMX non-root mode to exit.
 When a target is already executing root-mode code, the host IDT processes the
 NMI. The backend registers a nonpageable `KeRegisterNmiCallback` callback that
-joins an armed epoch using only per-CPU lookup, interlocked operations,
-`VMWRITE`, and `_mm_pause()`. It reports the internal rendezvous NMI as handled.
-Every fast and slow path also checks the active epoch immediately before
-`VMRESUME` as a defensive fallback for a coalesced or late observation.
+consumes the expected marker and joins an active epoch when needed, using only
+per-CPU lookup, interlocked operations, `VMWRITE`, and `_mm_pause()`. It reports
+the internal rendezvous NMI as handled. Every fast and slow path also checks
+the active epoch immediately before `VMRESUME` as a defensive fallback for a
+coalesced or late observation.
 
 The owner waits for an exact participant count with a bounded deadline. It
-never assumes that ICR delivery alone means the targets are frozen.
+never assumes that ICR readiness or the ICR write proves hardware completion
+or means the targets are frozen.
 
 ### Safe TSC compensation starts after complete arrival
 
@@ -66,6 +79,12 @@ The protocol compensates only the interval beginning after every participant
 has joined. Subtracting time beginning at the initial broadcast could move a
 late target's guest-visible TSC backward because that target may have executed
 guest instructions after the broadcast but before accepting the NMI.
+
+The endpoint is when owner Finish captures the delta immediately before
+publishing `Preparing`. Preparation, coordinated VMCS offset application, the
+release lead, and final restoration/`VMRESUME` overhead are not subtracted and
+remain guest-visible. The implementation does not remove the complete frozen
+or exit-handling duration.
 
 All participants subtract the same delta. Per-CPU deltas are prohibited
 because they would create a cross-core TSC discontinuity.
@@ -128,13 +147,16 @@ For xAPIC, the owner waits for ICR delivery-status bit 12 to clear and writes
 `0x000C4400` to the mapped ICR-low register at offset `0x300`. The destination
 register is ignored because destination shorthand is active.
 
+The xAPIC readiness wait occurs while the phase is `Claimed`, before target
+markers are armed. A readiness timeout aborts without an ICR write.
+
 For x2APIC, the owner writes the 64-bit value `0x00000000000C4400` to
 `IA32_X2APIC_ICR` (`0x830`). The destination field is zero because shorthand
 selects all other logical processors.
 
-A full memory barrier publishes the epoch, owner, counts, and phase before the
-ICR write. Arrival counting, rather than delivery-status polling, proves that
-the topology has entered the barrier.
+The owner publishes the epoch, owner, counts, `Acquiring` phase, and target
+expected-epoch markers before the ICR write. Arrival counting, rather than
+delivery-status polling, proves that the topology has entered the barrier.
 
 ## VMCS controls
 
@@ -148,9 +170,10 @@ Startup fails with the existing control-mismatch diagnostics if any required
 control is unavailable. `VMCS_TSC_OFFSET` is initialized from the per-CPU
 cumulative offset, initially zero.
 
-The current assembly CPUID fast path cannot bypass rendezvous classification.
-Mandatory CPUID exits therefore use the common handler. Benchmark-only VMCALL
-handling remains independent but must execute the pre-`VMRESUME` join check.
+CPUID exits use the existing C emulation and masking path. Outside hook
+proximity, benign CPUID still causes a VM exit but does not acquire a global
+rendezvous or broadcast NMIs. Benchmark-only VMCALL handling remains
+independent but must execute the pre-`VMRESUME` join check.
 
 ## Exit classification
 
@@ -161,7 +184,6 @@ captured, but before timing-sensitive emulation or EPT mutation begins.
 
 These exits always request ownership of a rendezvous epoch:
 
-- CPUID, basic reason 10;
 - EPT violation, basic reason 48;
 - RDTSC, basic reason 16, when intercepted;
 - RDTSCP, basic reason 51, when intercepted;
@@ -176,16 +198,22 @@ are serialized rather than nested.
 These exits request rendezvous only when the processor's hook-proximity budget
 was nonzero at exit entry:
 
+- CPUID, basic reason 10;
 - control-register access, basic reason 28;
 - RDMSR or WRMSR, basic reasons 31 and 32, except the mandatory TSC read;
 - descriptor-table access, basic reasons 46 and 47, if existing or future VMCS
   controls make those exits reachable.
 
-A hook-related EPT violation that matches an installed hook policy reloads the
-local budget to eight. Each subsequent non-excluded VM exit consumes one unit
-after classification. Mandatory exits consume budget but remain mandatory.
-Excluded exits neither trigger rendezvous nor consume budget. This defines
-proximity in deterministic exit count rather than guest-visible time.
+A hook-related EPT violation that matches an installed hook policy is mandatory
+and reloads the per-CPU budget to exactly eight. Each subsequent non-excluded
+VM exit, including CPUID, consumes one unit after classification. Mandatory
+exits consume budget but remain mandatory. Excluded exits neither trigger
+rendezvous nor consume budget. This defines proximity in deterministic exit
+count rather than guest-visible time.
+
+This policy change does not add artificial jitter, a broad CPUID cache, a
+forced `CPUID.80000007H:EDX[8]` value, an assembly CPUID fast path, a new
+`Draining` phase, or any change to NMI, APIC, or timeout behavior.
 
 ### Strictly excluded rendezvous
 
@@ -209,13 +237,18 @@ them to one of these classes.
 
 1. The triggering processor first joins any already-active epoch.
 2. It atomically changes the shared phase from `Idle` to `Claimed`.
-3. It increments the epoch and publishes its processor index and metadata.
-4. It snapshots processors whose state is `HV_CPU_RUNNING`. The participant
+3. While `Claimed`, it waits for all prior per-CPU join guards and expected-NMI
+   markers to drain, verifies the xAPIC ICR when needed, and rechecks that
+   lifecycle is `RUNNING`.
+4. It increments the epoch and publishes its processor index and metadata.
+5. It snapshots processors whose state is `HV_CPU_RUNNING`. The participant
    count includes the owner; arrived count starts at one.
-5. It release-publishes `Acquiring`, then broadcasts the NMI.
-6. It spins with `_mm_pause()` until arrived count equals participant count.
-7. It records the fully-frozen start TSC and changes phase to `Frozen`.
-8. It performs the exit-specific emulation or EPT operation.
+6. It resets the counters, release-publishes `Acquiring`, and publishes the
+   expected epoch to every target.
+7. It broadcasts the NMI.
+8. It spins with `_mm_pause()` until arrived count equals participant count.
+9. It records the fully-frozen start TSC and changes phase to `Frozen`.
+10. It performs the exit-specific emulation or EPT operation.
 
 Only one owner exists per epoch. A target increments arrived count once by
 atomically claiming its per-CPU joined epoch.
@@ -261,6 +294,9 @@ After emulation, the owner:
    globally visible. The next owner uses a new epoch, so late readers cannot be
    mistaken for participants in the next rendezvous.
 
+The delta in step 1 covers only fully-frozen arrival through the start of
+`Preparing`. Steps 3 through 9 remain guest-visible overhead.
+
 The final TSC spin is placed as close as practical to the common `VMRESUME`
 sequence. Guest register values are preserved across the wait.
 
@@ -292,8 +328,12 @@ offsets would corrupt guest time.
 All phase transitions use interlocked operations or explicit barriers:
 
 - `Claimed` excludes another owner while metadata is constructed;
-- owner metadata is released before `Acquiring` becomes observable and before
-  the ICR write;
+- prior per-CPU join guards drain while `Claimed`, before epoch advancement
+  and counter reset;
+- prior expected-NMI markers drain before a new marker is published;
+- owner metadata is released before `Acquiring` becomes observable;
+- target expected-epoch markers are armed after `Acquiring` is visible and
+  before the ICR write;
 - targets acquire phase before reading epoch metadata;
 - compensation delta is released before `Preparing`;
 - all prepared increments complete before `Applying`;
@@ -312,10 +352,15 @@ calibrates deadline ticks, initializes the rendezvous record, and stores the
 `HV_STATE` pointer. Per-CPU preparation initializes local epochs, offsets, and
 hook budgets.
 
-Teardown begins only after common lifecycle rendezvous has stopped every VMX
-processor. It verifies that the rendezvous phase is `Idle`, deregisters the NMI
-callback, clears state, and unmaps xAPIC MMIO. A non-idle phase during teardown
-is an invariant violation and follows the existing fail-stop teardown policy.
+After common changes lifecycle from `RUNNING` to `STOPPING`, it calls the
+backend's passive-level quiesce hook before changing any per-CPU state or
+executing VMXOFF. Intel quiesce waits for rendezvous phase `Idle` and for every
+expected-NMI marker to be consumed. The post-claim lifecycle recheck prevents
+new epochs while stop is pending. A quiesce timeout is fail stop.
+
+Common then stops every VMX processor. The NMI callback remains registered
+through this step; backend teardown deregisters it only after CPU stop and
+per-CPU context release, then clears state and unmaps xAPIC MMIO.
 
 CPU hot-add after launch remains unsupported. The participant snapshot uses the
 startup CPU array and `HV_CPU_RUNNING` states.
@@ -331,26 +376,34 @@ Build-time verification covers:
 - WDK static analysis;
 - project XML parsing and `git diff --check`.
 
-A small runnable state-machine check will exercise:
+The portable self-check in `tools/intel-rendezvous-policy-selfcheck.c` covers:
 
-- mandatory, conditional, and excluded classification;
+- mandatory, conditional, and excluded classification, including CPUID both
+  inside and outside the eight-exit window;
 - exact eight-exit budget consumption;
-- one-arrival, one-prepared, and one-applied increment per CPU per epoch;
-- concurrent-owner serialization;
-- acquisition abort without TSC modification;
-- identical compensation delta on all participants.
+- budget preservation across excluded exits;
+- ICR-low encoding;
+- required NMI-exiting and virtual-NMI pin-control bits;
+- the required TSC-offset primary-control bit.
 
 Bare-metal verification must record the processor model, APIC mode, active
 logical-processor count, build hash, and configuration. It must cover:
 
 - xAPIC and x2APIC broadcasts;
-- CPUID and EPT mandatory rendezvous;
-- conditional CR/MSR behavior inside and outside the eight-exit window;
+- mandatory EPT, RDTSC, RDTSCP, and `RDMSR(IA32_TSC)` rendezvous;
+- conditional CPUID and CR/MSR behavior inside and outside the eight-exit
+  window;
 - excluded external-interrupt, MTF, and preemption-timer behavior;
 - concurrent mandatory exits on multiple processors;
 - timeout release with an intentionally withheld participant;
 - guest TSC monotonicity and cross-core skew before and after compensation;
 - repeated start/stop teardown.
+
+The CPUID performance gate uses the same Release artifact and bare-metal
+platform for five inactive 200000-sample runs and five active runs with no hook
+activity. The median active CPUID leaf-0 `ratio(trim)` must be no greater than
+10. CPUID leaf 16h is informational and is not judged against this gate because
+the recorded bare-metal leaf-16 ratio already exceeds 10.
 
 Build success alone is not runtime proof for LAPIC delivery, VMCS timing, or
 cross-core resume skew.

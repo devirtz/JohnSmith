@@ -46,7 +46,8 @@ typedef struct _INTEL_HOST_STACK_FRAME {
     ULONG CpuidLeaf0Ecx;
     ULONG CpuidLeaf0Edx;
     ULONG64 FastPathEnabled;
-    ULONG64 Reserved[2];
+    volatile LONG* RendezvousPhase;
+    ULONG64 Reserved;
 } INTEL_HOST_STACK_FRAME;
 
 typedef struct _INTEL_EXIT_RECORD {
@@ -129,6 +130,8 @@ typedef struct _INTEL_CPU_CONTEXT {
     ULONG EntryControls;
     ULONG DesiredPrimaryControls;
     ULONG DesiredSecondaryControls;
+    ULONG RequiredPinControls;
+    ULONG RequiredPrimaryControls;
     ULONG RequiredSecondaryControls;
     ULONG RequiredExitControls;
     ULONG RequiredEntryControls;
@@ -158,6 +161,16 @@ typedef struct _INTEL_CPU_CONTEXT {
     BOOLEAN VirtualNmiEnabled;
     volatile LONG PendingInterruptValid;
     UCHAR PendingInterruptVector;
+    ULONG ProcessorIndex;
+    volatile LONG HookRendezvousBudget;
+    volatile LONG RendezvousJoinGuard;
+    volatile LONG64 RendezvousJoinedEpoch;
+    volatile LONG64 RendezvousPreparedEpoch;
+    volatile LONG64 RendezvousAppliedEpoch;
+    volatile LONG64 RendezvousExpectedNmiEpoch;
+    volatile LONG64 RendezvousConsumedNmiEpoch;
+    volatile LONG64 RendezvousOwnedEpoch;
+    ULONG64 TscOffset;
     INTEL_EXIT_RECORD ExitHistory[INTEL_EXIT_HISTORY_COUNT];
 } INTEL_CPU_CONTEXT;
 
@@ -168,6 +181,7 @@ C_ASSERT(FIELD_OFFSET(INTEL_HOST_STACK_FRAME, CpuSlatGeneration) == 8);
 C_ASSERT(FIELD_OFFSET(INTEL_HOST_STACK_FRAME, BackendSlatGeneration) == 16);
 C_ASSERT(FIELD_OFFSET(INTEL_HOST_STACK_FRAME, CpuidLeaf0Eax) == 24);
 C_ASSERT(FIELD_OFFSET(INTEL_HOST_STACK_FRAME, FastPathEnabled) == 40);
+C_ASSERT(FIELD_OFFSET(INTEL_HOST_STACK_FRAME, RendezvousPhase) == 48);
 C_ASSERT(FIELD_OFFSET(INTEL_CPU_CONTEXT, ResumeRsp) == 56);
 C_ASSERT(FIELD_OFFSET(INTEL_CPU_CONTEXT, ResumeRip) == 64);
 C_ASSERT(FIELD_OFFSET(INTEL_CPU_CONTEXT, GuestCr2) == 72);
@@ -175,6 +189,9 @@ C_ASSERT((INTEL_EXIT_HISTORY_COUNT & (INTEL_EXIT_HISTORY_COUNT - 1)) == 0);
 C_ASSERT(sizeof(INTEL_EXIT_RECORD) == 64);
 C_ASSERT((FIELD_OFFSET(INTEL_CPU_CONTEXT, ExitSequence) & 7) == 0);
 C_ASSERT((FIELD_OFFSET(INTEL_CPU_CONTEXT, CompletedExitSequence) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(INTEL_CPU_CONTEXT, RendezvousJoinGuard) & 3) == 0);
+C_ASSERT((FIELD_OFFSET(INTEL_CPU_CONTEXT, RendezvousJoinedEpoch) & 7) == 0);
+C_ASSERT((FIELD_OFFSET(INTEL_CPU_CONTEXT, TscOffset) & 7) == 0);
 
 NTSTATUS
 IntelSetLaunchState(

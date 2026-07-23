@@ -148,6 +148,7 @@
     <ClCompile Include="src\intel\intel_hypercall.c" />
     <ClCompile Include="src\intel\intel_hypercall_worker.c" />
     <ClCompile Include="src\intel\intel_hook.c" />
+    <ClCompile Include="src\intel\intel_rendezvous.c" />
     <ClCompile Include="src\intel\intel_slat.c" />
     <ClCompile Include="src\intel\intel_vmcs.c" />
     <ClCompile Include="src\amd.c" />
@@ -165,6 +166,7 @@
     <ClInclude Include="src\common\x86_common.h" />
     <ClInclude Include="include\intel.h" />
     <ClInclude Include="src\intel\intel_internal.h" />
+    <ClInclude Include="src\intel\intel_rendezvous_policy.h" />
     <ClInclude Include="include\amd.h" />
     <ClInclude Include="src\amd\amd_internal.h" />
     <ClInclude Include="include\hook_observe.h" />

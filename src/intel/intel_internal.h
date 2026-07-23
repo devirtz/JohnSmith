@@ -1,9 +1,13 @@
 #pragma once
 
 #include "intel.h"
+#include "intel_rendezvous_policy.h"
 
 #include <intrin.h>
 
+#define IA32_APIC_BASE                      0x0000001Bu
+#define IA32_X2APIC_ICR                     0x00000830u
+#define IA32_TIME_STAMP_COUNTER             0x00000010u
 #define IA32_FEATURE_CONTROL                0x0000003Au
 #define IA32_SYSENTER_CS                    0x00000174u
 #define IA32_SYSENTER_ESP                   0x00000175u
@@ -14,6 +18,12 @@
 #define IA32_EFER                           0xC0000080u
 #define IA32_FS_BASE                        0xC0000100u
 #define IA32_GS_BASE                        0xC0000101u
+
+#define IA32_APIC_BASE_X2APIC               (1ull << 10)
+#define IA32_APIC_BASE_ENABLE               (1ull << 11)
+#define IA32_APIC_BASE_ADDRESS_MASK         0x000FFFFFFFFFF000ull
+#define XAPIC_ICR_LOW_OFFSET                0x300u
+#define XAPIC_ICR_DELIVERY_STATUS           (1u << 12)
 
 #define IA32_VMX_BASIC                      0x00000480u
 #define IA32_VMX_PINBASED_CTLS              0x00000481u
@@ -154,6 +164,7 @@
 #define VMX_PRIMARY_ACTIVATE_SECONDARY      (1u << 31)
 #define VMX_PRIMARY_USE_MSR_BITMAPS         (1u << 28)
 #define VMX_PRIMARY_INTERRUPT_WINDOW        (1u << 2)
+#define VMX_PRIMARY_USE_TSC_OFFSETTING      (1u << 3)
 #define VMX_PRIMARY_NMI_WINDOW              (1u << 22)
 #define VMX_PIN_NMI_EXITING                  (1u << 3)
 #define VMX_PIN_VIRTUAL_NMIS                 (1u << 5)
@@ -172,6 +183,15 @@
 #define VMX_ENTRY_IA32E_MODE                (1u << 9)
 #define VMX_ENTRY_LOAD_PAT                  (1u << 14)
 #define VMX_ENTRY_LOAD_EFER                 (1u << 15)
+
+C_ASSERT(INTEL_POLICY_REQUIRED_PIN_CONTROLS ==
+         (VMX_PIN_NMI_EXITING | VMX_PIN_VIRTUAL_NMIS));
+C_ASSERT(INTEL_POLICY_REQUIRED_PRIMARY_CONTROLS ==
+         (VMX_PRIMARY_ACTIVATE_SECONDARY |
+          VMX_PRIMARY_USE_MSR_BITMAPS |
+          VMX_PRIMARY_USE_TSC_OFFSETTING));
+C_ASSERT(INTEL_POLICY_REQUIRED_DYNAMIC_PRIMARY_CONTROLS ==
+         VMX_PRIMARY_NMI_WINDOW);
 #define VMX_CR4_VMXE                        (1ull << 13)
 #define CPUID_CET_SS                        (1u << 7)
 #define CPUID_CET_IBT                       (1u << 20)
@@ -206,6 +226,7 @@
 #define VMX_EPT_QUAL_TRANSLATION            (1ull << 8)
 
 #define VMX_EXIT_EXCEPTION_OR_NMI           0u
+#define VMX_EXIT_EXTERNAL_INTERRUPT         1u
 #define VMX_EXIT_INIT_SIGNAL                3u
 #define VMX_EXIT_INTERRUPT_WINDOW           7u
 #define VMX_EXIT_NMI_WINDOW                 8u
@@ -216,9 +237,13 @@
 #define VMX_EXIT_DR_ACCESS                  29u
 #define VMX_EXIT_RDMSR                      31u
 #define VMX_EXIT_WRMSR                      32u
+#define VMX_EXIT_MONITOR_TRAP_FLAG          37u
+#define VMX_EXIT_GDTR_IDTR_ACCESS           46u
+#define VMX_EXIT_LDTR_TR_ACCESS             47u
 #define VMX_EXIT_EPT_VIOLATION              48u
 #define VMX_EXIT_EPT_MISCONFIGURATION       49u
 #define VMX_EXIT_RDTSCP                     51u
+#define VMX_EXIT_PREEMPTION_TIMER           52u
 #define VMX_EXIT_XSETBV                     55u
 #define VMX_EXIT_REASON_ENTRY_FAILURE       (1u << 31)
 #define VMX_ENTRY_INJECT_UD                 0x80000306u
@@ -243,6 +268,8 @@
 #define INTEL_BUGCHECK_EVENT_COLLISION      0x49455654u
 #define INTEL_BUGCHECK_EPT_VIOLATION        0x45505456u
 #define INTEL_BUGCHECK_EPT_MISCONFIG        0x4550544Du
+#define INTEL_BUGCHECK_RENDEZVOUS           0x4952565Au
+#define INTEL_BUGCHECK_CONTROL_UPDATE       0x4943544Cu
 
 #define INVEPT_SINGLE_CONTEXT               1u
 #define INVEPT_ALL_CONTEXTS                 2u
@@ -259,11 +286,14 @@
 #define INTEL_START_STAGE_INVVPID           8u
 #define INTEL_START_STAGE_VMLAUNCH          9u
 
-#define INTEL_CONTROL_FAIL_SECONDARY_ACTIVATION (1u << 3)
-#define INTEL_CONTROL_FAIL_BITMAPS              (1u << 4)
-#define INTEL_CONTROL_FAIL_SECONDARY_REQUIRED   (1u << 5)
-#define INTEL_CONTROL_FAIL_EXIT_REQUIRED        (1u << 6)
-#define INTEL_CONTROL_FAIL_ENTRY_REQUIRED       (1u << 7)
+#define INTEL_CONTROL_FAIL_PIN_REQUIRED          (1u << 0)
+#define INTEL_CONTROL_FAIL_PRIMARY_REQUIRED      (1u << 1)
+#define INTEL_CONTROL_FAIL_NMI_WINDOW            (1u << 2)
+#define INTEL_CONTROL_FAIL_SECONDARY_ACTIVATION  (1u << 3)
+#define INTEL_CONTROL_FAIL_BITMAPS               (1u << 4)
+#define INTEL_CONTROL_FAIL_SECONDARY_REQUIRED    (1u << 5)
+#define INTEL_CONTROL_FAIL_EXIT_REQUIRED         (1u << 6)
+#define INTEL_CONTROL_FAIL_ENTRY_REQUIRED        (1u << 7)
 
 typedef enum _INTEL_SPLIT_REASON {
     /* Boot-time split because the covered 2 MiB region mixes RAM and MMIO.
@@ -312,6 +342,46 @@ typedef struct _INTEL_EPT_VIOLATION {
     BOOLEAN EptExecutable;
 } INTEL_EPT_VIOLATION;
 
+typedef enum _INTEL_APIC_MODE {
+    INTEL_APIC_MODE_XAPIC = 0,
+    INTEL_APIC_MODE_X2APIC = 1
+} INTEL_APIC_MODE;
+
+typedef enum _INTEL_RENDEZVOUS_PHASE {
+    INTEL_RENDEZVOUS_IDLE = 0,
+    INTEL_RENDEZVOUS_CLAIMED,
+    INTEL_RENDEZVOUS_ACQUIRING,
+    INTEL_RENDEZVOUS_FROZEN,
+    INTEL_RENDEZVOUS_PREPARING,
+    INTEL_RENDEZVOUS_APPLYING,
+    INTEL_RENDEZVOUS_RELEASING,
+    INTEL_RENDEZVOUS_ABORTING
+} INTEL_RENDEZVOUS_PHASE;
+
+typedef struct DECLSPEC_ALIGN(64) _INTEL_RENDEZVOUS {
+    volatile LONG Phase;
+    ULONG OwnerProcessor;
+    ULONG ParticipantCount;
+    volatile LONG ArrivedCount;
+    volatile LONG PreparedCount;
+    volatile LONG AppliedCount;
+    volatile LONG64 Epoch;
+    volatile LONG64 FrozenStartTsc;
+    volatile LONG64 CompensationDelta;
+    volatile LONG64 ResumeTsc;
+    volatile LONG64 DeadlineTsc;
+    volatile LONG64 AcquisitionTimeouts;
+    volatile LONG64 PreparedTimeouts;
+} INTEL_RENDEZVOUS;
+
+C_ASSERT((__alignof(INTEL_RENDEZVOUS) == 64));
+C_ASSERT(INTEL_RENDEZVOUS_ICR_LOW == 0x000C4400u);
+C_ASSERT(VMX_EXIT_EXTERNAL_INTERRUPT == INTEL_POLICY_EXIT_EXTERNAL_INTERRUPT);
+C_ASSERT(VMX_EXIT_MONITOR_TRAP_FLAG == INTEL_POLICY_EXIT_MTF);
+C_ASSERT(VMX_EXIT_GDTR_IDTR_ACCESS == INTEL_POLICY_EXIT_GDTR_IDTR);
+C_ASSERT(VMX_EXIT_LDTR_TR_ACCESS == INTEL_POLICY_EXIT_LDTR_TR);
+C_ASSERT(VMX_EXIT_PREEMPTION_TIMER == INTEL_POLICY_EXIT_PREEMPTION_TIMER);
+
 typedef struct _INTEL_BACKEND_CONTEXT {
     /* Identity EPT that maps every guest physical address to itself.
        Every vCPU boots with this EPTP loaded. */
@@ -326,6 +396,14 @@ typedef struct _INTEL_BACKEND_CONTEXT {
     ULONG64 EptVpidCapabilities;
     ULONG64 HostCr3;
     PVOID HostPml4;
+    HV_STATE* State;
+    PVOID NmiCallbackHandle;
+    volatile ULONG* XapicBase;
+    INTEL_APIC_MODE ApicMode;
+    ULONG64 TscFrequency;
+    ULONG64 RendezvousTimeoutTicks;
+    ULONG64 RendezvousLeadTicks;
+    INTEL_RENDEZVOUS Rendezvous;
 
     volatile LONG64 SlatGeneration;
 } INTEL_BACKEND_CONTEXT;
@@ -375,6 +453,63 @@ IntelBuildHostCr3(
 VOID
 IntelFreeHostCr3(
     _Inout_ INTEL_BACKEND_CONTEXT* Backend
+    );
+
+_IRQL_requires_(PASSIVE_LEVEL)
+NTSTATUS
+IntelRendezvousPrepare(
+    _Inout_ INTEL_BACKEND_CONTEXT* Backend,
+    _Inout_ HV_STATE* State
+    );
+
+_IRQL_requires_(PASSIVE_LEVEL)
+VOID
+IntelRendezvousFree(
+    _Inout_ INTEL_BACKEND_CONTEXT* Backend
+    );
+
+_IRQL_requires_(PASSIVE_LEVEL)
+VOID
+IntelRendezvousQuiesce(
+    _Inout_ INTEL_BACKEND_CONTEXT* Backend
+    );
+
+BOOLEAN
+IntelRendezvousJoinActive(
+    _Inout_ INTEL_CPU_CONTEXT* Context
+    );
+
+BOOLEAN
+IntelRendezvousConsumeExpectedNmi(
+    _Inout_ INTEL_CPU_CONTEXT* Context
+    );
+
+BOOLEAN
+IntelRendezvousBegin(
+    _Inout_ INTEL_CPU_CONTEXT* Context
+    );
+
+ULONG64
+IntelRendezvousGuestTsc(
+    _In_ const INTEL_CPU_CONTEXT* Context,
+    _In_ ULONG64 HostTsc
+    );
+
+VOID
+IntelRendezvousFinish(
+    _Inout_ INTEL_CPU_CONTEXT* Context
+    );
+
+INTEL_RENDEZVOUS_POLICY
+IntelRendezvousClassifyAndConsume(
+    _Inout_ INTEL_CPU_CONTEXT* Context,
+    _In_ ULONG Reason,
+    _In_ ULONG Msr
+    );
+
+VOID
+IntelRendezvousReloadHookBudget(
+    _Inout_ INTEL_CPU_CONTEXT* Context
     );
 
 NTSTATUS

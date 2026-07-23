@@ -58,6 +58,8 @@ struct _HV_BACKEND_OPS {
     VOID (*Free)(_Inout_ HV_STATE* State);
     NTSTATUS (*PrepareCpu)(_Inout_ HV_STATE* State, _Inout_ HV_CPU* Cpu);
     VOID (*FreeCpu)(_Inout_ HV_STATE* State, _Inout_ HV_CPU* Cpu);
+    /* PASSIVE_LEVEL callback: drain backend activity before CPU teardown. */
+    VOID (*Quiesce)(_Inout_ HV_STATE* State);
     /*
      * IPI_LEVEL callbacks: called inside KeIpiGenericCall.  Do not allocate,
      * block, log, or touch pageable code.

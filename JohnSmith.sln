@@ -4,8 +4,6 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "JohnSmith", "JohnSmith.vcxproj", "{E36AEAC1-ECE8-4E4D-B755-D4575541EC8F}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "vmexit-bench", "tools\vmexit-bench\vmexit-bench.vcxproj", "{4EB727DA-8184-4E79-8301-4323C89DB217}"
-EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "johnsmithctl", "tools\johnsmithctl\johnsmithctl.vcxproj", "{9A3244F8-4F17-4C4D-A4C6-7E9D8278A1A2}"
 EndProject
 Global
@@ -21,12 +19,6 @@ Global
 		{E36AEAC1-ECE8-4E4D-B755-D4575541EC8F}.Benchmark|x64.Build.0 = Benchmark|x64
 		{E36AEAC1-ECE8-4E4D-B755-D4575541EC8F}.Release|x64.ActiveCfg = Release|x64
 		{E36AEAC1-ECE8-4E4D-B755-D4575541EC8F}.Release|x64.Build.0 = Release|x64
-		{4EB727DA-8184-4E79-8301-4323C89DB217}.Debug|x64.ActiveCfg = Release|x64
-		{4EB727DA-8184-4E79-8301-4323C89DB217}.Debug|x64.Build.0 = Release|x64
-		{4EB727DA-8184-4E79-8301-4323C89DB217}.Benchmark|x64.ActiveCfg = Release|x64
-		{4EB727DA-8184-4E79-8301-4323C89DB217}.Benchmark|x64.Build.0 = Release|x64
-		{4EB727DA-8184-4E79-8301-4323C89DB217}.Release|x64.ActiveCfg = Release|x64
-		{4EB727DA-8184-4E79-8301-4323C89DB217}.Release|x64.Build.0 = Release|x64
 		{9A3244F8-4F17-4C4D-A4C6-7E9D8278A1A2}.Debug|x64.ActiveCfg = Debug|x64
 		{9A3244F8-4F17-4C4D-A4C6-7E9D8278A1A2}.Debug|x64.Build.0 = Debug|x64
 		{9A3244F8-4F17-4C4D-A4C6-7E9D8278A1A2}.Benchmark|x64.ActiveCfg = Benchmark|x64

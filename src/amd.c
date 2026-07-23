@@ -260,6 +260,15 @@ AmdCurrentCpuMatches(
     return KeGetProcessorIndexFromNumber(&number) == Cpu->ProcessorIndex;
 }
 
+_IRQL_requires_(PASSIVE_LEVEL)
+static VOID
+AmdQuiesce(
+    _Inout_ HV_STATE* State
+    )
+{
+    UNREFERENCED_PARAMETER(State);
+}
+
 static VOID
 AmdReportStartFailure(
     _In_ HV_STATE* State,
@@ -366,6 +375,7 @@ static const HV_BACKEND_OPS AmdBackendOps = {
     AmdFree,
     AmdPrepareCpu,
     AmdFreeCpu,
+    AmdQuiesce,
     AmdStart,
     AmdStop,
     AmdReportStartFailure,

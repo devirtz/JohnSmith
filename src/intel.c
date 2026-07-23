@@ -145,7 +145,7 @@ IntelPrepare(
     NTSTATUS status;
 
     context = (INTEL_BACKEND_CONTEXT*)ExAllocatePool2(
-        POOL_FLAG_NON_PAGED, sizeof(*context), HV_POOL_TAG_BACKEND);
+        POOL_FLAG_NON_PAGED | POOL_FLAG_CACHE_ALIGNED, sizeof(*context), HV_POOL_TAG_BACKEND);
     if (context == NULL) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -165,12 +165,16 @@ IntelPrepare(
 
     State->BackendContext = context;
 
-    status = IntelBuildEpt(context);
+    status = IntelRendezvousPrepare(context, State);
+    if (NT_SUCCESS(status)) {
+        status = IntelBuildEpt(context);
+    }
     if (NT_SUCCESS(status)) {
         status = IntelHookEnsureSecondaryRoot(context);
     }
     if (!NT_SUCCESS(status)) {
         IntelFreeEpt(context);
+        IntelRendezvousFree(context);
         ExFreePoolWithTag(context, HV_POOL_TAG_BACKEND);
         State->BackendContext = NULL;
     }
@@ -191,6 +195,7 @@ IntelFree(
     IntelHookTeardown();
     ObserveHookReset();
     IntelFreeEpt(context);
+    IntelRendezvousFree(context);
     ExFreePoolWithTag(context, HV_POOL_TAG_BACKEND);
     State->BackendContext = NULL;
 }
@@ -243,6 +248,9 @@ IntelPrepareCpu(
     }
     RtlZeroMemory(context, sizeof(*context));
     ExInitializeRundownProtection(&context->HypercallPageRundown);
+    context->BackendContext = backend;
+    context->ProcessorIndex = Cpu->ProcessorIndex;
+    context->TscOffset = 0;
 
     context->Vmxon = IntelAllocatePage(MAXULONG);
     context->Vmcs = IntelAllocatePage(MAXULONG);
@@ -258,7 +266,6 @@ IntelPrepareCpu(
     context->VmxonPhysical = MmGetPhysicalAddress(context->Vmxon);
     context->VmcsPhysical = MmGetPhysicalAddress(context->Vmcs);
     context->MsrBitmapPhysical = MmGetPhysicalAddress(context->MsrBitmap);
-    context->BackendContext = backend;
     context->SlatGeneration = backend->SlatGeneration;
     context->StopCookie = __rdtsc() ^ (ULONG64)context ^
                           (ULONG64)context->VmcsPhysical.QuadPart;
@@ -289,6 +296,16 @@ IntelFreeCpu(
     context = (INTEL_CPU_CONTEXT*)Cpu->VendorContext;
     IntelDestroyCpuContext(context);
     Cpu->VendorContext = NULL;
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+static VOID
+IntelQuiesce(
+    _Inout_ HV_STATE* State
+    )
+{
+    IntelRendezvousQuiesce(
+        (INTEL_BACKEND_CONTEXT*)State->BackendContext);
 }
 
 static BOOLEAN
@@ -345,16 +362,19 @@ IntelReportStartFailure(
     if (context->StartFailureStage == INTEL_START_STAGE_VMCS_SETUP &&
         context->ControlFailureMask != 0) {
         HV_LOG_ERROR(
-            "CPU %lu VMCS control mismatch 0x%02X: pin=0x%08X, "
-            "primary=0x%08X/desired=0x%08X, "
+            "CPU %lu VMCS control mismatch 0x%02X: "
+            "pin=0x%08X/required=0x%08X, "
+            "primary=0x%08X/desired=0x%08X/required=0x%08X, "
             "secondary=0x%08X/desired=0x%08X/required=0x%08X, "
             "exit=0x%08X/required=0x%08X, "
             "entry=0x%08X/required=0x%08X.\n",
             Cpu->ProcessorIndex,
             context->ControlFailureMask,
             context->PinControls,
+            context->RequiredPinControls,
             context->PrimaryControls,
             context->DesiredPrimaryControls,
+            context->RequiredPrimaryControls,
             context->SecondaryControls,
             context->DesiredSecondaryControls,
             context->RequiredSecondaryControls,
@@ -492,12 +512,23 @@ IntelStop(
     INTEL_CPU_CONTEXT* context;
     INTEL_DESCRIPTOR_TABLE_REGISTER gdtr;
     INTEL_DESCRIPTOR_TABLE_REGISTER idtr;
+    LONG64 ownedEpoch;
 
     UNREFERENCED_PARAMETER(State);
     if (!IntelCurrentCpuMatches(Cpu) || Cpu->VendorContext == NULL) {
         return STATUS_INVALID_DEVICE_STATE;
     }
     context = (INTEL_CPU_CONTEXT*)Cpu->VendorContext;
+    ownedEpoch = InterlockedCompareExchange64(
+        &context->RendezvousOwnedEpoch, 0, 0);
+    if (ownedEpoch != 0) {
+        KeBugCheckEx(
+            HYPERVISOR_ERROR,
+            INTEL_BUGCHECK_RENDEZVOUS,
+            Cpu->ProcessorIndex,
+            ownedEpoch,
+            INTEL_VMEXIT_STOP);
+    }
     if (!context->Launched) {
         return STATUS_SUCCESS;
     }
@@ -533,6 +564,7 @@ static const HV_BACKEND_OPS IntelBackendOps = {
     IntelFree,
     IntelPrepareCpu,
     IntelFreeCpu,
+    IntelQuiesce,
     IntelStart,
     IntelStop,
     IntelReportStartFailure,

@@ -38,6 +38,7 @@
     <ClInclude Include="include\hook_observe.h"><Filter>Header Files\Public</Filter></ClInclude>
     <ClInclude Include="src\common\x86_common.h"><Filter>Header Files\Private</Filter></ClInclude>
     <ClInclude Include="src\intel\intel_internal.h"><Filter>Header Files\Private</Filter></ClInclude>
+    <ClInclude Include="src\intel\intel_rendezvous_policy.h"><Filter>Header Files\Private</Filter></ClInclude>
     <ClInclude Include="src\amd\amd_internal.h"><Filter>Header Files\Private</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -54,6 +55,7 @@
     <ClCompile Include="src\intel\intel_hypercall.c"><Filter>Source Files\Intel</Filter></ClCompile>
     <ClCompile Include="src\intel\intel_hypercall_worker.c"><Filter>Source Files\Intel</Filter></ClCompile>
     <ClCompile Include="src\intel\intel_hook.c"><Filter>Source Files\Intel</Filter></ClCompile>
+    <ClCompile Include="src\intel\intel_rendezvous.c"><Filter>Source Files\Intel</Filter></ClCompile>
     <ClCompile Include="src\intel\intel_slat.c"><Filter>Source Files\Intel</Filter></ClCompile>
     <ClCompile Include="src\intel\intel_vmcs.c"><Filter>Source Files\Intel</Filter></ClCompile>
     <ClCompile Include="src\amd.c"><Filter>Source Files\AMD</Filter></ClCompile>

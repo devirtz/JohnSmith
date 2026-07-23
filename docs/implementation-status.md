@@ -14,18 +14,22 @@ Windows build.
 | Intel VMX | `src/intel.c`, `src/intel/intel_vmcs.c`, `src/intel/intel_exit.c`, and `asm/intel.asm`. |
 | Intel EPT/VPID | `src/intel/intel_slat.c` builds identity mappings, manages per-CPU views, and performs generation-based invalidation. |
 | Intel execute hooks | `src/intel/intel_hook.c` installs, removes, queries, and switches dual-EPT views. |
+| Intel cross-core rendezvous | `src/intel/intel_rendezvous.c` implements xAPIC/x2APIC NMI broadcast, root/non-root joining, TSC compensation, and bounded release. |
 | Hook observation | `src/hook_observe.c`, `src/hook_thunk.c`, `src/hook_trampoline.c`, and `asm/hook_dispatch.asm`. |
 | Intel control transport | `src/intel/intel_hypercall.c` and `src/intel/intel_hypercall_worker.c` implement the seeded CPUID/shared-page protocol. |
 | AMD SVM/NPT | `src/amd.c`, `src/amd/`, `include/amd.h`, and `asm/amd.asm`. |
 | Control client and loader | `tools/johnsmithctl/` starts and stops the driver, resolves exports, accesses memory, and manages hooks. |
-| VM-exit measurement | `tools/vmexit-bench/` measures CPUID and Benchmark VMCALL transitions. |
+| Hypervisor measurement | `tools/hv-benchmark/` measures CPUID, RDTSC, SERIALIZE, and Benchmark VMCALL transitions. |
 
 ## Repository checks
 
 ```powershell
 msbuild .\JohnSmith.sln /m /p:Configuration=Release /p:Platform=x64
 .\build\bin\tools\johnsmithctl.exe selftest
-.\tools\test-source-contracts.ps1
+cl /nologo /std:c17 /W4 /WX /TC /I .\src\intel `
+  .\tools\intel-rendezvous-policy-selfcheck.c `
+  /Fe:"$env:TEMP\johnsmith-rendezvous-policy-selfcheck.exe"
+& "$env:TEMP\johnsmith-rendezvous-policy-selfcheck.exe"
 ```
 
 The Debug and Benchmark configurations use the same solution with their

@@ -35,12 +35,50 @@ The VM-exit path:
 
 Unknown exits and invalid transition states use distinct fail-stop signatures.
 
+## NMI rendezvous and TSC compensation
+
+Timing-sensitive exits use an epoch-counted VMX-root barrier. The owner sends
+ICR-low `0x000C4400` through xAPIC MMIO offset `0x300` or x2APIC MSR `0x830`.
+NMI exiting handles targets in VMX non-root mode; a registered Windows NMI
+callback handles targets already in VMX-root mode.
+
+EPT violations, intercepted RDTSC/RDTSCP, and intercepted `RDMSR(0x10)` are
+mandatory rendezvous exits. A matched hook EPT violation reloads the per-CPU
+budget to exactly eight, and each subsequent non-excluded exit, including
+CPUID, decrements it. Mandatory exits still rendezvous and consume budget.
+External interrupts, MTF, and the VMX-preemption timer neither start a
+rendezvous nor consume budget. CPUID, control-register, other MSR, GDTR/IDTR,
+and LDTR/TR exits rendezvous only when the budget was nonzero at exit entry.
+
+The compensated interval starts when every participant has arrived and ends
+when owner Finish captures the delta immediately before publishing `Preparing`.
+Every participant then prepares before any `VMCS_TSC_OFFSET` write, applies the
+same delta, and waits for one future resume TSC. Preparation, VMCS apply coordination, the release lead, and final resume overhead remain guest-visible.
+Acquisition and prepared-count timeouts fail open without compensation;
+failures after offset application begins fail stop.
+
+While the phase is `Claimed`, the owner drains old per-CPU join guards and
+outstanding expected-NMI markers, verifies xAPIC ICR readiness when needed,
+and rechecks that lifecycle is still `RUNNING` before advancing the epoch. It
+then publishes `Acquiring`, defensively verifies the prior markers remain
+drained, arms new expected-epoch markers, and broadcasts. Because NMI carries
+no software tag, an unrelated physical NMI can satisfy or coalesce with an
+armed marker. This approved first-NMI assumption still requires hardware
+validation. The xAPIC preflight occurs before marker arming, preventing a
+no-send failure from leaving stale markers.
+
 ## CPUID policy
 
-CPUID exits are emulated. The policy hides VMX exposure, applies the enabled
-INVPCID, XSAVES, and RDTSCP masks, and preserves native topology and
-OS-dependent results. Release and Benchmark configurations can use the
-assembly fast path when its EPT, event, debug, and code-segment guards pass.
+CPUID exits are emulated through the C handler in Debug, Release, and
+Benchmark. The policy hides VMX exposure, applies the enabled INVPCID, XSAVES,
+and RDTSCP masks, and preserves native topology and OS-dependent results.
+Outside hook proximity, benign CPUID still VM-exits through this path but does
+not acquire a global rendezvous or broadcast NMIs. Only Benchmark enables the
+guarded assembly VMCALL fast path.
+
+This policy change adds no artificial jitter, broad CPUID cache, forced
+`CPUID.80000007H:EDX[8]`, assembly CPUID fast path, new `Draining` phase, or
+change to NMI, APIC, or timeout behavior.
 
 ## EPT and VPID
 
@@ -98,6 +136,9 @@ the worker, drains rundown protection, removes hooks, resets thunk storage, and
 frees processor EPT views.
 
 ## Teardown and diagnostics
+
+After lifecycle changes to `STOPPING`, common calls the backend quiesce hook.
+Intel waits for rendezvous phase `Idle` and until all outstanding expected-NMI markers are consumed before VMXOFF or per-CPU state changes. The NMI callback remains registered through CPU stop and is deregistered only during later backend teardown. A quiesce timeout follows the fail-stop policy.
 
 Before VMXOFF, the stop path captures current guest control, debug, descriptor,
 PAT, EFER, SYSENTER, FS, and GS state. The assembly return path restores that

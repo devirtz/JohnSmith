@@ -45,3 +45,7 @@ Thumbs.db
 Desktop.ini
 *.swp
 *~
+
+# Nested repo (own git) - do not track under JohnSmith
+tools/HvD/
+
