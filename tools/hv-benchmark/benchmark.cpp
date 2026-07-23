@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -10,6 +11,130 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+enum class BenchmarkModule : unsigned {
+    SoftwareTick = 1,
+    TscExit = 2,
+    TscCpuid = 4,
+    All = 7
+};
+
+struct BenchmarkOptions {
+    unsigned sampleCount = 200000;
+    BenchmarkModule modules = BenchmarkModule::All;
+    bool vmcall = false;
+    bool plain = false;
+};
+
+struct PanelRow { std::string name; std::string value; };
+
+struct ModuleOutcome {
+    bool gated;
+    bool passed;
+    DWORD setupError;
+};
+
+struct ModuleResult {
+    std::string title;
+    std::vector<PanelRow> rows;
+    ModuleOutcome outcome;
+};
+
+struct SoftwareTickTripwire {
+    bool equalOne;
+    bool greaterThan2000;
+};
+
+[[maybe_unused]] static bool ParseOptions(const int argc, char** argv, BenchmarkOptions& options)
+{
+    options = {};
+    bool moduleSpecified = false;
+    bool sampleSpecified = false;
+    unsigned selected = 0;
+    for (int index = 1; index < argc; ++index) {
+        const char* argument = argv[index];
+        if (argument[0] != '-') {
+            if (sampleSpecified) return false;
+            char* end = nullptr;
+            errno = 0;
+            const unsigned long value = std::strtoul(argument, &end, 10);
+            if (errno == ERANGE || end == argument || *end != '\0' ||
+                value < 10000 || value > 10000000) return false;
+            options.sampleCount = static_cast<unsigned>(value);
+            sampleSpecified = true;
+        } else if (std::strcmp(argument, "--software-tick") == 0) {
+            selected |= static_cast<unsigned>(BenchmarkModule::SoftwareTick);
+            moduleSpecified = true;
+        } else if (std::strcmp(argument, "--tsc-exit") == 0) {
+            selected |= static_cast<unsigned>(BenchmarkModule::TscExit);
+            moduleSpecified = true;
+        } else if (std::strcmp(argument, "--tsc-cpuid") == 0) {
+            selected |= static_cast<unsigned>(BenchmarkModule::TscCpuid);
+            moduleSpecified = true;
+        } else if (std::strcmp(argument, "--all") == 0) {
+            selected |= static_cast<unsigned>(BenchmarkModule::All);
+            moduleSpecified = true;
+        } else if (std::strcmp(argument, "--vmcall") == 0) {
+            options.vmcall = true;
+        } else if (std::strcmp(argument, "--plain") == 0) {
+            options.plain = true;
+        } else {
+            return false;
+        }
+    }
+    options.modules = static_cast<BenchmarkModule>(moduleSpecified ? selected :
+                                                     static_cast<unsigned>(BenchmarkModule::All));
+    return true;
+}
+
+[[maybe_unused]] static bool SoftwareTickPasses(const double ratio) { return ratio < 2.5; }
+[[maybe_unused]] static bool TscExitPasses(const double average) { return average > 0 && average < 1000; }
+
+[[maybe_unused]] static SoftwareTickTripwire DetectSoftwareTickTripwire(const std::vector<double>& values)
+{
+    SoftwareTickTripwire result{false, false};
+    for (const double value : values) {
+        result.equalOne = result.equalOne || value == 1.0;
+        result.greaterThan2000 = result.greaterThan2000 || value > 2000.0;
+    }
+    return result;
+}
+
+[[maybe_unused]] static ModuleOutcome CombineOutcome(const ModuleOutcome left, const ModuleOutcome right)
+{
+    return {
+        left.gated || right.gated,
+        left.passed && right.passed && left.setupError == ERROR_SUCCESS && right.setupError == ERROR_SUCCESS,
+        left.setupError != ERROR_SUCCESS ? left.setupError : right.setupError
+    };
+}
+
+[[maybe_unused]] static void PrintPanel(const ModuleResult& result, const bool plain)
+{
+    if (plain) {
+        std::printf("%s:\n", result.title.c_str());
+        for (const PanelRow& row : result.rows)
+            std::printf("%s | %s\n", row.name.c_str(), row.value.c_str());
+        std::putchar('\n');
+        return;
+    }
+    std::size_t width = result.title.size() + 3;
+    for (const PanelRow& row : result.rows)
+        width = std::max(width, row.name.size() + row.value.size() + 5);
+    std::printf("┌─ %s ", result.title.c_str());
+    for (std::size_t i = result.title.size() + 3; i < width; ++i) std::printf("─");
+    std::printf("┐\n");
+    for (const PanelRow& row : result.rows)
+    {
+        const std::size_t rowWidth = row.name.size() + row.value.size() + 5;
+        std::printf("│ %s | %s", row.name.c_str(), row.value.c_str());
+        for (std::size_t i = rowWidth; i < width; ++i) std::putchar(' ');
+        std::printf(" │\n");
+    }
+    std::printf("└");
+    for (std::size_t i = 0; i < width; ++i) std::printf("─");
+    std::printf("┘\n");
+}
 
 extern "C" void MeasureSerialize(volatile std::uint64_t*, std::uint64_t*, unsigned);
 extern "C" void MeasureCpuidLeaf0(volatile std::uint64_t*, std::uint64_t*, unsigned);
