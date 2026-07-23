@@ -147,6 +147,20 @@ struct SoftwareTickTripwire {
     std::printf("┘\n\n");
 }
 
+static ModuleResult MakeSetupErrorResult(
+    const char* const title,
+    const int code,
+    const std::string& message)
+{
+    char result[48];
+    std::snprintf(result, sizeof(result), "SETUP_ERROR code=%d", code);
+    return {
+        title,
+        {{"setup", message}, {"result", result}},
+        {false, true, code}
+    };
+}
+
 extern "C" void MeasureSerialize(volatile std::uint64_t*, std::uint64_t*, unsigned);
 extern "C" void MeasureCpuidLeaf0(volatile std::uint64_t*, std::uint64_t*, unsigned);
 extern "C" void MeasureCpuidLeaf16(volatile std::uint64_t*, std::uint64_t*, unsigned);
@@ -272,15 +286,15 @@ static Statistics Summarize(std::vector<std::uint64_t> samples)
 }
 
 static bool RunProbe(
-    const char* name,
-    Probe probe,
+    const Probe probe,
     ClockLine& clock,
     const unsigned sampleCount,
-    Statistics& statistics)
+    Statistics& statistics,
+    DWORD& exceptionCode)
 {
     std::vector<std::uint64_t> warmup(4096);
     std::vector<std::uint64_t> samples(sampleCount);
-    DWORD exceptionCode = 0;
+    exceptionCode = 0;
     if (!InvokeProbeSeh(
             probe,
             &clock.value,
@@ -293,11 +307,252 @@ static bool RunProbe(
             samples.data(),
             sampleCount,
             &exceptionCode)) {
-        std::printf("%-16s unavailable (exception 0x%08lX)\n", name, exceptionCode);
         return false;
     }
     statistics = Summarize(std::move(samples));
     return true;
+}
+
+static ModuleResult RunSoftwareTickTimer(
+    const BenchmarkOptions& options,
+    const LogicalCpu testCpu,
+    const LogicalCpu clockCpu,
+    const unsigned maximumLeaf,
+    const bool serializeSupported)
+{
+    if (!serializeSupported) {
+        return MakeSetupErrorResult(
+            "Software-tick timer",
+            6,
+            "SERIALIZE is not enumerated by CPUID.7.0:EDX[14]");
+    }
+
+    ClockLine clock{};
+    ControlLine control{};
+    std::thread clockThread([&] {
+        const bool pinned = PinCurrentThread(clockCpu);
+        DWORD setupError = pinned ? ERROR_SUCCESS : GetLastError();
+        const bool prioritized = pinned && SetThreadPriority(
+            GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != FALSE;
+        if (pinned && !prioritized) setupError = GetLastError();
+        control.setupError.store(setupError, std::memory_order_relaxed);
+        control.setupSucceeded.store(
+            pinned && prioritized, std::memory_order_relaxed);
+        control.ready.store(true, std::memory_order_release);
+        while (!control.stop.load(std::memory_order_relaxed)) ++clock.value;
+    });
+
+    while (!control.ready.load(std::memory_order_acquire)) YieldProcessor();
+    if (!control.setupSucceeded.load(std::memory_order_relaxed)) {
+        control.stop.store(true, std::memory_order_relaxed);
+        clockThread.join();
+        char message[96];
+        std::snprintf(
+            message,
+            sizeof(message),
+            "clock affinity/priority failed (error %lu)",
+            control.setupError.load(std::memory_order_relaxed));
+        return MakeSetupErrorResult("Software-tick timer", 5, message);
+    }
+
+    Sleep(50);
+    Statistics serialize{};
+    Statistics leaf0{};
+    Statistics leaf16{};
+    Statistics vmcall{};
+    DWORD serializeException = 0;
+    DWORD leaf0Exception = 0;
+    DWORD leaf16Exception = 0;
+    DWORD vmcallException = 0;
+    const bool haveSerialize = RunProbe(
+        MeasureSerialize,
+        clock,
+        options.sampleCount,
+        serialize,
+        serializeException);
+    const bool haveLeaf0 = RunProbe(
+        MeasureCpuidLeaf0,
+        clock,
+        options.sampleCount,
+        leaf0,
+        leaf0Exception);
+    const bool leaf16Supported = maximumLeaf >= 0x16;
+    const bool haveLeaf16 = leaf16Supported && RunProbe(
+        MeasureCpuidLeaf16,
+        clock,
+        options.sampleCount,
+        leaf16,
+        leaf16Exception);
+    const bool haveVmcall = options.vmcall && RunProbe(
+        MeasureVmcall,
+        clock,
+        options.sampleCount,
+        vmcall,
+        vmcallException);
+
+    control.stop.store(true, std::memory_order_relaxed);
+    clockThread.join();
+
+    std::vector<PanelRow> rows;
+    char topology[128];
+    std::snprintf(
+        topology,
+        sizeof(topology),
+        "%u / group%u/cpu%u / group%u/cpu%u",
+        options.sampleCount,
+        testCpu.group,
+        testCpu.number,
+        clockCpu.group,
+        clockCpu.number);
+    rows.push_back({"samples / test / clock", topology});
+    rows.push_back({
+        "probe",
+        "mean | trim-mean | p10 | median | p90 | ratio(trim)"});
+
+    const auto appendProbe = [&](const char* const name,
+                                 const Statistics& value,
+                                 const bool available,
+                                 const double ratio,
+                                 const char* const unavailable) {
+        if (!available) {
+            rows.push_back({name, unavailable});
+            return;
+        }
+        char line[160];
+        std::snprintf(
+            line,
+            sizeof(line),
+            "%.2f | %.2f | %llu | %llu | %llu | %.3f",
+            value.mean,
+            value.trimmedMean,
+            static_cast<unsigned long long>(value.p10),
+            static_cast<unsigned long long>(value.median),
+            static_cast<unsigned long long>(value.p90),
+            ratio);
+        rows.push_back({name, line});
+    };
+
+    const double leaf0Ratio = haveSerialize && serialize.trimmedMean != 0.0 &&
+                              haveLeaf0
+        ? leaf0.trimmedMean / serialize.trimmedMean
+        : 0.0;
+    const double leaf16Ratio = haveSerialize && serialize.trimmedMean != 0.0 &&
+                               haveLeaf16
+        ? leaf16.trimmedMean / serialize.trimmedMean
+        : 0.0;
+    const double vmcallRatio = haveSerialize && serialize.trimmedMean != 0.0 &&
+                               haveVmcall
+        ? vmcall.trimmedMean / serialize.trimmedMean
+        : 0.0;
+
+    char serializeUnavailable[64];
+    char leaf0Unavailable[64];
+    char leaf16Unavailable[64];
+    char vmcallUnavailable[64];
+    std::snprintf(
+        serializeUnavailable,
+        sizeof(serializeUnavailable),
+        "unavailable (exception 0x%08lX)",
+        serializeException);
+    std::snprintf(
+        leaf0Unavailable,
+        sizeof(leaf0Unavailable),
+        "unavailable (exception 0x%08lX)",
+        leaf0Exception);
+    if (leaf16Supported) {
+        std::snprintf(
+            leaf16Unavailable,
+            sizeof(leaf16Unavailable),
+            "unavailable (exception 0x%08lX)",
+            leaf16Exception);
+    } else {
+        std::snprintf(
+            leaf16Unavailable,
+            sizeof(leaf16Unavailable),
+            "unavailable (unsupported)");
+    }
+    std::snprintf(
+        vmcallUnavailable,
+        sizeof(vmcallUnavailable),
+        "unavailable (exception 0x%08lX)",
+        vmcallException);
+
+    appendProbe(
+        "SERIALIZE",
+        serialize,
+        haveSerialize,
+        1.0,
+        serializeUnavailable);
+    appendProbe(
+        "CPUID leaf 0",
+        leaf0,
+        haveLeaf0,
+        leaf0Ratio,
+        leaf0Unavailable);
+    appendProbe(
+        "CPUID leaf 16h",
+        leaf16,
+        haveLeaf16,
+        leaf16Ratio,
+        leaf16Unavailable);
+    if (options.vmcall) {
+        appendProbe(
+            "VMCALL floor",
+            vmcall,
+            haveVmcall,
+            vmcallRatio,
+            vmcallUnavailable);
+    }
+
+    int setupError = ERROR_SUCCESS;
+    if (!haveSerialize || !haveLeaf0 ||
+        serialize.trimmedMean <= 0.0 || leaf0.trimmedMean <= 0.0 ||
+        (leaf16Supported && !haveLeaf16) ||
+        (options.vmcall && !haveVmcall)) {
+        setupError = 7;
+    }
+
+    const bool gateRan = haveSerialize && haveLeaf0 &&
+                         serialize.trimmedMean > 0.0 &&
+                         leaf0.trimmedMean > 0.0;
+    const bool passed = gateRan && SoftwareTickPasses(leaf0Ratio);
+    if (gateRan) {
+        char gate[96];
+        std::snprintf(
+            gate,
+            sizeof(gate),
+            "leaf0_ratio=%.3f threshold=2.5 result=%s",
+            leaf0Ratio,
+            passed ? "PASS" : "FAIL");
+        rows.push_back({"software-tick", gate});
+
+        const SoftwareTickTripwire tripwire = DetectSoftwareTickTripwire(
+            serialize.trimmedMean, leaf0.trimmedMean);
+        char trimmed[96];
+        char flags[96];
+        std::snprintf(
+            trimmed,
+            sizeof(trimmed),
+            "trim_serialize=%.2f trim_leaf0=%.2f",
+            serialize.trimmedMean,
+            leaf0.trimmedMean);
+        std::snprintf(
+            flags,
+            sizeof(flags),
+            "tripwire_eq1=%s tripwire_gt2000=%s",
+            tripwire.equalOne ? "yes" : "no",
+            tripwire.greaterThan2000 ? "yes" : "no");
+        rows.push_back({"tripwire trim", trimmed});
+        rows.push_back({"tripwire flags", flags});
+    } else {
+        rows.push_back({"software-tick", "result=SETUP_ERROR code=7"});
+    }
+
+    return {
+        "Software-tick timer",
+        std::move(rows),
+        {gateRan, passed, setupError}
+    };
 }
 
 static std::int64_t AverageAdjustedTiming(
@@ -395,146 +650,112 @@ static __declspec(noinline) CpuidRdtscTiming MeasureCpuidRdtscTiming()
     };
 }
 
-static bool TimingSelfCheck()
+static void PrintUsage(FILE* const output)
 {
-    return AverageAdjustedTiming(1000, 200, 100) == 8 &&
-           AverageAdjustedTiming(200, 1000, 100) == -8 &&
-           AverageAdjustedTiming(0, 0, 0) == 0;
-}
-
-static unsigned ParseSamples(const int argc, char** argv)
-{
-    if (argc < 2) return 200000;
-    const unsigned long value = std::strtoul(argv[1], nullptr, 10);
-    return value >= 10000 && value <= 10000000
-        ? static_cast<unsigned>(value)
-        : 200000;
+    std::fputs(
+        "hv-benchmark.exe [samples] [flags]\n\n"
+        "  samples              default 200000; software-tick only\n\n"
+        "  --all                all modules\n"
+        "  --software-tick\n"
+        "  --tsc-exit\n"
+        "  --tsc-cpuid\n"
+        "  --vmcall             include VMCALL in software-tick\n"
+        "  --plain              text framing\n",
+        output);
 }
 
 int main(int argc, char** argv)
 {
-    if (argc == 2 && std::strcmp(argv[1], "--selfcheck") == 0) {
-        if (!TimingSelfCheck()) {
-            std::fputs("hv-benchmark selfcheck failed\n", stderr);
-            return 1;
-        }
-        std::puts("hv-benchmark selfcheck passed");
-        return 0;
+    BenchmarkOptions options{};
+    if (!ParseOptions(argc, argv, options)) {
+        PrintUsage(stderr);
+        return 2;
     }
 
-    const unsigned sampleCount = ParseSamples(argc, argv);
-    const bool requestVmcall = argc >= 3 && std::strcmp(argv[2], "--vmcall") == 0;
+    SetConsoleOutputCP(CP_UTF8);
     const auto cores = FirstLogicalCpuPerCore();
-    if (cores.size() < 2) {
-        std::fprintf(stderr, "At least two physical cores are required.\n");
-        return 2;
+    const auto selected = [&](const BenchmarkModule module) {
+        return (static_cast<unsigned>(options.modules) &
+                static_cast<unsigned>(module)) != 0;
+    };
+    const auto printAffected = [&](const int code, const std::string& message) {
+        if (selected(BenchmarkModule::SoftwareTick)) {
+            const ModuleResult result = MakeSetupErrorResult(
+                "Software-tick timer", code, message);
+            PrintPanel(result.title, result.rows, options.plain);
+        }
+        if (selected(BenchmarkModule::TscExit)) {
+            const ModuleResult result = MakeSetupErrorResult(
+                "TSC-exit timer", code, message);
+            PrintPanel(result.title, result.rows, options.plain);
+        }
+        if (selected(BenchmarkModule::TscCpuid)) {
+            const ModuleResult result = MakeSetupErrorResult(
+                "TSC-CPUID timer", code, message);
+            PrintPanel(result.title, result.rows, options.plain);
+        }
+    };
+
+    if (cores.empty()) {
+        printAffected(3, "no physical-core logical CPU was discovered");
+        return 3;
+    }
+
+    const LogicalCpu testCpu = cores[0];
+    const bool testPinned = PinCurrentThread(testCpu);
+    DWORD testSetupError = testPinned ? ERROR_SUCCESS : GetLastError();
+    const bool testPrioritized = testPinned && SetThreadPriority(
+        GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != FALSE;
+    if (testPinned && !testPrioritized) testSetupError = GetLastError();
+    if (!testPinned || !testPrioritized) {
+        char message[96];
+        std::snprintf(
+            message,
+            sizeof(message),
+            "test affinity/priority failed (error %lu)",
+            testSetupError);
+        printAffected(4, message);
+        return 4;
     }
 
     int cpuid[4]{};
     __cpuid(cpuid, 0);
     const unsigned maximumLeaf = static_cast<unsigned>(cpuid[0]);
-    __cpuidex(cpuid, 7, 0);
-    if ((static_cast<unsigned>(cpuid[3]) & (1u << 14)) == 0) {
-        std::fprintf(stderr, "SERIALIZE is not enumerated by CPUID.7.0:EDX[14].\n");
-        return 3;
+    bool serializeSupported = false;
+    if (maximumLeaf >= 7) {
+        __cpuidex(cpuid, 7, 0);
+        serializeSupported =
+            (static_cast<unsigned>(cpuid[3]) & (1u << 14)) != 0;
     }
 
-    const LogicalCpu testCpu = cores[0];
-    const LogicalCpu clockCpu = cores[1];
-    ClockLine clock{};
-    ControlLine control{};
-
-    std::thread clockThread([&] {
-        const bool pinned = PinCurrentThread(clockCpu);
-        DWORD setupError = pinned ? ERROR_SUCCESS : GetLastError();
-        const bool prioritized = pinned && SetThreadPriority(
-            GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != FALSE;
-        if (pinned && !prioritized) {
-            setupError = GetLastError();
-        }
-        control.setupError.store(setupError, std::memory_order_relaxed);
-        control.setupSucceeded.store(
-            pinned && prioritized, std::memory_order_relaxed);
-        control.ready.store(true, std::memory_order_release);
-        while (!control.stop.load(std::memory_order_relaxed)) {
-            ++clock.value;
-        }
-    });
-
-    const bool testPinned = PinCurrentThread(testCpu);
-    DWORD testSetupError = testPinned ? ERROR_SUCCESS : GetLastError();
-    const bool testPrioritized = testPinned && SetThreadPriority(
-        GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != FALSE;
-    if (testPinned && !testPrioritized) {
-        testSetupError = GetLastError();
+    int exitCode = 0;
+    if (selected(BenchmarkModule::SoftwareTick)) {
+        ModuleResult result = cores.size() >= 2
+            ? RunSoftwareTickTimer(
+                  options,
+                  testCpu,
+                  cores[1],
+                  maximumLeaf,
+                  serializeSupported)
+            : MakeSetupErrorResult(
+                  "Software-tick timer",
+                  3,
+                  "software-tick requires two physical cores");
+        PrintPanel(result.title, result.rows, options.plain);
+        exitCode = CombineOutcome(exitCode, result.outcome);
     }
-    while (!control.ready.load(std::memory_order_acquire)) YieldProcessor();
-    if (!testPinned || !testPrioritized ||
-        !control.setupSucceeded.load(std::memory_order_relaxed)) {
-        control.stop.store(true, std::memory_order_relaxed);
-        clockThread.join();
-        std::fprintf(
-            stderr,
-            "Failed to pin or prioritize benchmark threads "
-            "(test error %lu, clock error %lu).\n",
-            testSetupError,
-            control.setupError.load(std::memory_order_relaxed));
-        return 4;
+
+    if (selected(BenchmarkModule::TscExit)) {
+        const ModuleResult result = RunTscExitTimer();
+        PrintPanel(result.title, result.rows, options.plain);
+        exitCode = CombineOutcome(exitCode, result.outcome);
     }
-    Sleep(50);
-    const CpuidRdtscTiming cpuidRdtsc = MeasureCpuidRdtscTiming();
 
-    std::printf(
-        "samples=%u test=group%u/cpu%u clock=group%u/cpu%u max_leaf=0x%X\n",
-        sampleCount,
-        testCpu.group,
-        testCpu.number,
-        clockCpu.group,
-        clockCpu.number,
-        maximumLeaf);
-    std::printf(
-        "cpuid-rdtsc leaf=1 iterations=100 cpuid_avg=%llu "
-        "rdtsc_avg=%llu adjusted=%lld\n",
-        static_cast<unsigned long long>(cpuidRdtsc.cpuidAverage),
-        static_cast<unsigned long long>(cpuidRdtsc.rdtscAverage),
-        static_cast<long long>(cpuidRdtsc.adjustedAverage));
-    std::fflush(stdout);
+    if (selected(BenchmarkModule::TscCpuid)) {
+        const ModuleResult result = RunTscCpuidTimer();
+        PrintPanel(result.title, result.rows, options.plain);
+        exitCode = CombineOutcome(exitCode, result.outcome);
+    }
 
-    Statistics serialize{};
-    Statistics leaf0{};
-    Statistics leaf16{};
-    Statistics vmcall{};
-    const bool haveSerialize = RunProbe(
-        "SERIALIZE", MeasureSerialize, clock, sampleCount, serialize);
-    const bool haveLeaf0 = RunProbe(
-        "CPUID leaf 0", MeasureCpuidLeaf0, clock, sampleCount, leaf0);
-    const bool haveLeaf16 = maximumLeaf >= 0x16 && RunProbe(
-        "CPUID leaf 16h", MeasureCpuidLeaf16, clock, sampleCount, leaf16);
-    const bool haveVmcall = requestVmcall && RunProbe(
-        "VMCALL floor", MeasureVmcall, clock, sampleCount, vmcall);
-
-    control.stop.store(true, std::memory_order_relaxed);
-    clockThread.join();
-
-    std::puts("probe             mean    trim-mean   p10  median   p90   ratio(trim)");
-    auto print = [&](const char* name, const Statistics& value, const bool valid) {
-        if (!valid) return;
-        const double ratio = haveSerialize && serialize.trimmedMean != 0
-            ? value.trimmedMean / serialize.trimmedMean
-            : 0;
-        std::printf(
-            "%-16s %8.2f %12.2f %5llu %7llu %5llu %12.3f\n",
-            name,
-            value.mean,
-            value.trimmedMean,
-            static_cast<unsigned long long>(value.p10),
-            static_cast<unsigned long long>(value.median),
-            static_cast<unsigned long long>(value.p90),
-            ratio);
-    };
-    print("SERIALIZE", serialize, haveSerialize);
-    print("CPUID leaf 0", leaf0, haveLeaf0);
-    print("CPUID leaf 16h", leaf16, haveLeaf16);
-    print("VMCALL floor", vmcall, haveVmcall);
-    return 0;
+    return exitCode;
 }

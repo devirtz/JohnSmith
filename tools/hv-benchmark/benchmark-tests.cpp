@@ -146,6 +146,18 @@ int main()
            "│ long-name | 1     │\n"
            "└───────────────────┘\n\n");
 
+    const ModuleResult setup = MakeSetupErrorResult(
+        "Setup timer", 7, "probe unavailable");
+    assert(setup.title == "Setup timer");
+    assert(setup.rows.size() == 2);
+    assert(setup.rows[0].name == "setup");
+    assert(setup.rows[0].value == "probe unavailable");
+    assert(setup.rows[1].name == "result");
+    assert(setup.rows[1].value == "SETUP_ERROR code=7");
+    assert(!setup.outcome.gated);
+    assert(setup.outcome.passed);
+    assert(setup.outcome.setupError == 7);
+
     const ModuleResult cpuidTimer = RunTscCpuidTimer();
     assert(cpuidTimer.title == "TSC-CPUID timer");
     assert(!cpuidTimer.outcome.gated);
