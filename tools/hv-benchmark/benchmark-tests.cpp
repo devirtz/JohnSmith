@@ -145,5 +145,23 @@ int main()
            "│ short     | 12345 │\n"
            "│ long-name | 1     │\n"
            "└───────────────────┘\n\n");
+
+    const ModuleResult cpuidTimer = RunTscCpuidTimer();
+    assert(cpuidTimer.title == "TSC-CPUID timer");
+    assert(!cpuidTimer.outcome.gated);
+    assert(cpuidTimer.outcome.setupError == ERROR_SUCCESS);
+    assert(cpuidTimer.rows.size() == 3);
+    assert(cpuidTimer.rows[0].name == "leaf / samples");
+    assert(cpuidTimer.rows[1].name == "cpuid_avg / rdtsc_avg");
+    assert(cpuidTimer.rows[2].name == "adjusted");
+
+    const ModuleResult exitTimer = RunTscExitTimer();
+    assert(exitTimer.title == "TSC-exit timer");
+    assert(exitTimer.outcome.gated);
+    assert(exitTimer.outcome.setupError == ERROR_SUCCESS);
+    assert(exitTimer.rows.size() == 3);
+    assert(exitTimer.rows[0].name == "samples / sleep / leaf");
+    assert(exitTimer.rows[1].name == "average / threshold");
+    assert(exitTimer.rows[2].name == "result");
     return 0;
 }

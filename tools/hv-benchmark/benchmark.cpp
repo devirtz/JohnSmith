@@ -88,7 +88,7 @@ struct SoftwareTickTripwire {
 }
 
 [[maybe_unused]] static bool SoftwareTickPasses(const double ratio) { return ratio < 2.5; }
-[[maybe_unused]] static bool TscExitPasses(const double average) { return average > 0 && average < 1000; }
+[[maybe_unused]] static bool TscExitPasses(const std::uint64_t average) { return average > 0 && average < 1000; }
 
 [[maybe_unused]] static SoftwareTickTripwire DetectSoftwareTickTripwire(
     const double serializeTrimmedMean,
@@ -344,6 +344,55 @@ static __declspec(noinline) CpuidRdtscTiming MeasureCpuidRdtscTiming()
     };
     static_cast<void>(cpuidResult[0]);
     return result;
+}
+
+[[maybe_unused]] static ModuleResult RunTscCpuidTimer()
+{
+    const CpuidRdtscTiming timing = MeasureCpuidRdtscTiming();
+    return {
+        "TSC-CPUID timer",
+        {
+            {"leaf / samples", "1 / 100 CPUID + 100 RDTSC"},
+            {"cpuid_avg / rdtsc_avg",
+             std::to_string(timing.cpuidAverage) + " / " +
+                 std::to_string(timing.rdtscAverage)},
+            {"adjusted", std::to_string(timing.adjustedAverage)}
+        },
+        {false, true, ERROR_SUCCESS}
+    };
+}
+
+[[maybe_unused]] static __declspec(noinline) ModuleResult RunTscExitTimer()
+{
+    constexpr unsigned iterationCount = 10;
+    std::uint64_t total = 0;
+    int registers[4]{};
+    volatile int cpuidResult[4]{};
+
+    for (unsigned index = 0; index < iterationCount; ++index) {
+        const std::uint64_t before = __rdtsc();
+        __cpuid(registers, 0);
+        const std::uint64_t after = __rdtsc();
+        total += after - before;
+        Sleep(500);
+        cpuidResult[0] = registers[0];
+        cpuidResult[1] = registers[1];
+        cpuidResult[2] = registers[2];
+        cpuidResult[3] = registers[3];
+    }
+
+    const std::uint64_t average = total / iterationCount;
+    const bool passed = TscExitPasses(average);
+    static_cast<void>(cpuidResult[0]);
+    return {
+        "TSC-exit timer",
+        {
+            {"samples / sleep / leaf", "10 / 500ms / 0"},
+            {"average / threshold", std::to_string(average) + " / 1000"},
+            {"result", passed ? "PASS" : "FAIL"}
+        },
+        {true, passed, ERROR_SUCCESS}
+    };
 }
 
 static bool TimingSelfCheck()
