@@ -32,6 +32,18 @@ IntelVmxControlsAreToggleable(
            ((unsigned)(capability >> 32) & mask) == mask;
 }
 
+static inline int
+IntelVmxTransitionStateCanPersist(
+    unsigned long long exitCapability,
+    unsigned long long entryCapability,
+    unsigned exitControls,
+    unsigned entryControls
+    )
+{
+    return ((unsigned)exitCapability & exitControls) == 0 &&
+           ((unsigned)entryCapability & entryControls) == 0;
+}
+
 typedef enum {
     INTEL_POLICY_NONE = 0,
     INTEL_POLICY_MANDATORY,

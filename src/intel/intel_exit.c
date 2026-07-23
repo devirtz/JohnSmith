@@ -867,6 +867,20 @@ IntelCaptureStopState(
     _Out_ INTEL_CPU_CONTEXT* Context
     )
 {
+    if ((Context->ExitControls & VMX_EXIT_SAVE_PAT) != 0) {
+        if (!IntelVmReadValue(VMCS_GUEST_PAT, &Context->ResumePat)) {
+            return FALSE;
+        }
+    } else {
+        Context->ResumePat = __readmsr(IA32_PAT);
+    }
+    if ((Context->ExitControls & VMX_EXIT_SAVE_EFER) != 0) {
+        if (!IntelVmReadValue(VMCS_GUEST_EFER, &Context->ResumeEfer)) {
+            return FALSE;
+        }
+    } else {
+        Context->ResumeEfer = __readmsr(IA32_EFER);
+    }
     return IntelCaptureGuestControlRegister(
                VMCS_GUEST_CR0,
                VMCS_CR0_GUEST_HOST_MASK,
@@ -881,8 +895,6 @@ IntelCaptureStopState(
            IntelVmReadValue(VMCS_GUEST_DR7, &Context->ResumeDr7) &&
            IntelVmReadValue(VMCS_GUEST_FS_BASE, &Context->ResumeFsBase) &&
            IntelVmReadValue(VMCS_GUEST_GS_BASE, &Context->ResumeGsBase) &&
-           IntelVmReadValue(VMCS_GUEST_PAT, &Context->ResumePat) &&
-           IntelVmReadValue(VMCS_GUEST_EFER, &Context->ResumeEfer) &&
            IntelVmReadValue(
                VMCS_GUEST_SYSENTER_CS, &Context->ResumeSysenterCs) &&
            IntelVmReadValue(

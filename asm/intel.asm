@@ -15,9 +15,15 @@ VMCS_GUEST_RIP                EQU 0681Eh
 VMX_EXIT_CPUID                EQU 10
 VMX_EXIT_VMCALL               EQU 18
 
-HOST_FRAME_FAST_PATH_ENABLED  EQU 40
-HOST_FRAME_RENDEZVOUS_PHASE   EQU 48
-INTEL_RENDEZVOUS_IDLE         EQU 0
+HOST_FRAME_CPU_SLAT_GENERATION     EQU 8
+HOST_FRAME_BACKEND_SLAT_GENERATION EQU 16
+HOST_FRAME_CPUID_LEAF0_EAX         EQU 24
+HOST_FRAME_CPUID_LEAF0_EBX         EQU 28
+HOST_FRAME_CPUID_LEAF0_ECX         EQU 32
+HOST_FRAME_CPUID_LEAF0_EDX         EQU 36
+HOST_FRAME_FAST_PATH_ENABLED       EQU 40
+HOST_FRAME_RENDEZVOUS_PHASE        EQU 48
+INTEL_RENDEZVOUS_IDLE              EQU 0
 
 ; INTEL_CPU_CONTEXT layout consumed by this file.  Compile-time asserts in
 ; include/intel.h keep the offsets in sync.
@@ -49,12 +55,14 @@ IntelGuestResume:
 IntelAsmLaunch ENDP
 
 IntelAsmStop PROC
+    pushfq
     mov r9, rcx
     mov rax, HV_MAGIC_RAX
     mov rcx, HV_MAGIC_RCX
     mov rdx, HV_MAGIC_RDX
     mov r8,  HV_MAGIC_R8
     vmcall
+    popfq
     ret
 IntelAsmStop ENDP
 
@@ -81,74 +89,118 @@ IntelInvvpidFailed:
 IntelAsmInvvpid ENDP
 
 IntelAsmVmExit PROC
-IF JOHNSMITH_VMEXIT_BENCHMARK
-    ; Handle the benchmark VMCALL without constructing a C ABI frame.
+    ; Leaf-0 CPUID micropath: no C, no EPT flush, no rendezvous join.
+    ; Guest GPRs still live in host registers on exit. Host RSP is the
+    ; INTEL_HOST_STACK_FRAME (VMCS HOST_RSP). Fast path only when enabled
+    ; and rendezvous is idle so SLAT/epoch work stays on the C path.
     push r8
     push r9
-    push r10
-    push r11
 
-    lea r10, [rsp + 32]
-    cmp qword ptr [r10 + HOST_FRAME_FAST_PATH_ENABLED], 1
-    jne IntelVmExitSlowPath
+    cmp qword ptr [rsp + 16 + HOST_FRAME_FAST_PATH_ENABLED], 1
+    jne IntelVmExitAfterFastProbe
 
     mov r8d, VMCS_EXIT_REASON
     vmread r9, r8
-    jbe IntelVmExitSlowPath
+    jbe IntelVmExitAfterFastProbe
+    and r9d, 0FFFFh
     cmp r9d, VMX_EXIT_CPUID
-    je IntelVmExitSlowPath
+    jne IntelVmExitCheckBenchmarkVmcall
 
-    cmp r9d, VMX_EXIT_VMCALL
-    jne IntelVmExitSlowPath
-    mov r8, 04A534D5642454E43h
-    cmp rax, r8
-    jne IntelVmExitSlowPath
-    mov r8, 0484D41524B464C52h
-    cmp rcx, r8
-    jne IntelVmExitSlowPath
-    mov r8, 0564D43414C4C3031h
-    cmp rdx, r8
-    jne IntelVmExitSlowPath
-    mov r8, 0B16B00B5DEADC0DEh
-    cmp qword ptr [rsp + 24], r8
-    jne IntelVmExitSlowPath
-    mov r8, qword ptr [r10 + HOST_FRAME_RENDEZVOUS_PHASE]
+    ; Only leaf 0. Hypercall uses leaf 1 + magic subleaf → C path.
+    test eax, eax
+    jnz IntelVmExitAfterFastProbe
+
+    mov r8, qword ptr [rsp + 16 + HOST_FRAME_RENDEZVOUS_PHASE]
     test r8, r8
-    jz IntelVmExitSlowPath
+    jz IntelVmExitAfterFastProbe
     cmp dword ptr [r8], INTEL_RENDEZVOUS_IDLE
-    jne IntelVmExitSlowPath
-    ; Deliberately minimal, benchmark-only VMCALL completion.  This measures
-    ; VM-exit + RIP advancement + VMRESUME without entering C.
-    jmp IntelVmExitBenchmarkAdvanceRip
+    jne IntelVmExitAfterFastProbe
 
-IntelVmExitBenchmarkAdvanceRip:
-    mov r8d, VMCS_EXIT_INSTRUCTION_LENGTH
-    vmread r11, r8
-    jbe IntelVmExitSlowPath
+    ; Context generation is published only after the active EPT view is
+    ; flushed. A mismatch must take the C path through IntelFlushEptIfNeeded.
+    mov r8, qword ptr [rsp + 16 + HOST_FRAME_CPU_SLAT_GENERATION]
+    test r8, r8
+    jz IntelVmExitAfterFastProbe
+    mov r9, qword ptr [rsp + 16 + HOST_FRAME_BACKEND_SLAT_GENERATION]
+    test r9, r9
+    jz IntelVmExitAfterFastProbe
+    mov r8, qword ptr [r8]
+    cmp r8, qword ptr [r9]
+    jne IntelVmExitAfterFastProbe
+
+    ; CPUID is always 0F A2 (length 2). Skip EXIT_INSTRUCTION_LENGTH VMREAD.
+    ; Advance RIP before clobbering guest GPRs so a failed VMWRITE can fall
+    ; through to the C path with the original guest register state.
     mov r8d, VMCS_GUEST_RIP
     vmread r9, r8
-    jbe IntelVmExitSlowPath
+    jbe IntelVmExitAfterFastProbe
+    add r9, 2
+    vmwrite r9, r8
+    jbe IntelVmExitAfterFastProbe
+
+    mov eax, dword ptr [rsp + 16 + HOST_FRAME_CPUID_LEAF0_EAX]
+    mov ebx, dword ptr [rsp + 16 + HOST_FRAME_CPUID_LEAF0_EBX]
+    mov ecx, dword ptr [rsp + 16 + HOST_FRAME_CPUID_LEAF0_ECX]
+    mov edx, dword ptr [rsp + 16 + HOST_FRAME_CPUID_LEAF0_EDX]
+
+    pop r9
+    pop r8
+    vmresume
+    ud2
+
+IntelVmExitCheckBenchmarkVmcall:
+IF JOHNSMITH_VMEXIT_BENCHMARK
+    push r10
+    push r11
+
+    cmp r9d, VMX_EXIT_VMCALL
+    jne IntelVmExitBenchmarkProbeMiss
+    mov r8, 04A534D5642454E43h
+    cmp rax, r8
+    jne IntelVmExitBenchmarkProbeMiss
+    mov r8, 0484D41524B464C52h
+    cmp rcx, r8
+    jne IntelVmExitBenchmarkProbeMiss
+    mov r8, 0564D43414C4C3031h
+    cmp rdx, r8
+    jne IntelVmExitBenchmarkProbeMiss
+    mov r8, 0B16B00B5DEADC0DEh
+    cmp qword ptr [rsp + 24], r8
+    jne IntelVmExitBenchmarkProbeMiss
+    mov r8, qword ptr [rsp + 32 + HOST_FRAME_RENDEZVOUS_PHASE]
+    test r8, r8
+    jz IntelVmExitBenchmarkProbeMiss
+    cmp dword ptr [r8], INTEL_RENDEZVOUS_IDLE
+    jne IntelVmExitBenchmarkProbeMiss
+    ; Benchmark-only VMCALL: exit + RIP advance + VMRESUME, no C.
+    mov r8d, VMCS_EXIT_INSTRUCTION_LENGTH
+    vmread r11, r8
+    jbe IntelVmExitBenchmarkProbeMiss
+    mov r8d, VMCS_GUEST_RIP
+    vmread r9, r8
+    jbe IntelVmExitBenchmarkProbeMiss
     add r9, r11
     vmwrite r9, r8
-    jbe IntelVmExitSlowPath
-    jmp IntelVmExitFastResume
+    jbe IntelVmExitBenchmarkProbeMiss
 
-IntelVmExitFastResume:
     pop r11
     pop r10
     pop r9
     pop r8
     vmresume
     ud2
-ENDIF
 
-IntelVmExitSlowPath:
-IF JOHNSMITH_VMEXIT_BENCHMARK
+IntelVmExitBenchmarkProbeMiss:
     pop r11
     pop r10
+ENDIF
+
+IntelVmExitAfterFastProbe:
     pop r9
     pop r8
-ENDIF
+    jmp IntelVmExitSlowPath
+
+IntelVmExitSlowPath:
 
     ; Snapshot guest CR2 before any host code path can fault and clobber it.
     ; VMX does not save or restore CR2, so host CR2 == guest CR2 on VM exit

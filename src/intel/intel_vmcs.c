@@ -62,11 +62,10 @@ IntelCaptureSegment(
 static ULONG
 IntelAdjustControls(
     _In_ ULONG Desired,
-    _In_ ULONG Msr
+    _In_ ULONG64 Capability
     )
 {
-    ULONG64 capability = __readmsr(Msr);
-    return (Desired | (ULONG)capability) & (ULONG)(capability >> 32);
+    return (Desired | (ULONG)Capability) & (ULONG)(Capability >> 32);
 }
 
 NTSTATUS
@@ -123,6 +122,8 @@ IntelSetupVmcs(
     ULONG64 hostRsp;
     ULONG64 eptp;
     ULONG64 primaryCapability;
+    ULONG64 exitCapability;
+    ULONG64 entryCapability;
     INTEL_HOST_STACK_FRAME* hostFrame;
     int cpuid[4];
     NTSTATUS status;
@@ -155,6 +156,8 @@ IntelSetupVmcs(
         ? IA32_VMX_TRUE_EXIT_CTLS : IA32_VMX_EXIT_CTLS;
     entryMsr = (backend->VmxBasic & (1ull << 55)) != 0
         ? IA32_VMX_TRUE_ENTRY_CTLS : IA32_VMX_ENTRY_CTLS;
+    exitCapability = __readmsr(exitMsr);
+    entryCapability = __readmsr(entryMsr);
 
     requiredPin = VMX_PIN_NMI_EXITING | VMX_PIN_VIRTUAL_NMIS;
     desiredPin = requiredPin;
@@ -221,20 +224,33 @@ IntelSetupVmcs(
                       VMX_PRIMARY_USE_MSR_BITMAPS |
                       VMX_PRIMARY_USE_TSC_OFFSETTING;
     desiredPrimary = requiredPrimary;
-    pinControls = IntelAdjustControls(desiredPin, pinMsr);
+    pinControls = IntelAdjustControls(desiredPin, __readmsr(pinMsr));
     primaryControls = IntelAdjustControls(
-        desiredPrimary, primaryMsr);
+        desiredPrimary, primaryCapability);
     secondaryControls = IntelAdjustControls(
-        desiredSecondary, IA32_VMX_PROCBASED_CTLS2);
+        desiredSecondary, __readmsr(IA32_VMX_PROCBASED_CTLS2));
     requiredExit = VMX_EXIT_SAVE_DEBUG_CONTROLS |
-                   VMX_EXIT_HOST_ADDRESS_SPACE_SIZE |
-                   VMX_EXIT_SAVE_PAT | VMX_EXIT_LOAD_PAT |
-                   VMX_EXIT_SAVE_EFER | VMX_EXIT_LOAD_EFER;
+                   VMX_EXIT_HOST_ADDRESS_SPACE_SIZE;
     requiredEntry = VMX_ENTRY_LOAD_DEBUG_CONTROLS |
-                    VMX_ENTRY_IA32E_MODE |
-                    VMX_ENTRY_LOAD_PAT | VMX_ENTRY_LOAD_EFER;
-    exitControls = IntelAdjustControls(requiredExit, exitMsr);
-    entryControls = IntelAdjustControls(requiredEntry, entryMsr);
+                    VMX_ENTRY_IA32E_MODE;
+    if (!IntelVmxTransitionStateCanPersist(
+            exitCapability,
+            entryCapability,
+            VMX_EXIT_SAVE_PAT | VMX_EXIT_LOAD_PAT,
+            VMX_ENTRY_LOAD_PAT)) {
+        requiredExit |= VMX_EXIT_SAVE_PAT | VMX_EXIT_LOAD_PAT;
+        requiredEntry |= VMX_ENTRY_LOAD_PAT;
+    }
+    if (!IntelVmxTransitionStateCanPersist(
+            exitCapability,
+            entryCapability,
+            VMX_EXIT_SAVE_EFER | VMX_EXIT_LOAD_EFER,
+            VMX_ENTRY_LOAD_EFER)) {
+        requiredExit |= VMX_EXIT_SAVE_EFER | VMX_EXIT_LOAD_EFER;
+        requiredEntry |= VMX_ENTRY_LOAD_EFER;
+    }
+    exitControls = IntelAdjustControls(requiredExit, exitCapability);
+    entryControls = IntelAdjustControls(requiredEntry, entryCapability);
     context->PinControls = pinControls;
     context->PrimaryControls = primaryControls;
     context->SecondaryControls = secondaryControls;
@@ -307,11 +323,7 @@ IntelSetupVmcs(
     hostFrame->CpuidLeaf0Ebx = context->CpuidLeaf0Ebx;
     hostFrame->CpuidLeaf0Ecx = context->CpuidLeaf0Ecx;
     hostFrame->CpuidLeaf0Edx = context->CpuidLeaf0Edx;
-#if JOHNSMITH_DIAGNOSTICS
-    hostFrame->FastPathEnabled = 0;
-#else
     hostFrame->FastPathEnabled = 1;
-#endif
 
     VMX_WRITE(VMCS_PIN_BASED_CONTROLS, pinControls);
     VMX_WRITE(VMCS_PRIMARY_PROCESSOR_CONTROLS, primaryControls);
