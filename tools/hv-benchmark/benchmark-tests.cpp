@@ -31,7 +31,8 @@ static bool Parse(const std::initializer_list<const char*> arguments, BenchmarkO
 
 static std::string CapturePanel(const ModuleResult& result, const bool plain)
 {
-    FILE* capture = std::tmpfile();
+    FILE* capture = nullptr;
+    assert(tmpfile_s(&capture) == 0);
     assert(capture != nullptr);
     const int saved = _dup(_fileno(stdout));
     assert(saved >= 0);
@@ -65,11 +66,19 @@ int main()
     assert(ModuleBits(options.modules) ==
            (ModuleBits(BenchmarkModule::SoftwareTick) |
             ModuleBits(BenchmarkModule::TscExit)));
+    assert(Parse({"benchmark", "--software-tick", "--software-tick", "--tsc-exit", "--tsc-exit"}, options));
+    assert(ModuleBits(options.modules) ==
+           (ModuleBits(BenchmarkModule::SoftwareTick) |
+            ModuleBits(BenchmarkModule::TscExit)));
     assert(Parse({"benchmark", "--all", "--plain", "--vmcall"}, options));
     assert(ModuleBits(options.modules) == ModuleBits(BenchmarkModule::All));
     assert(options.plain && options.vmcall);
     assert(Parse({"benchmark", "10000"}, options));
     assert(options.sampleCount == 10000);
+    assert(Parse({"benchmark", "--plain", "10000000", "--vmcall"}, options));
+    assert(options.sampleCount == 10000000);
+    assert(!Parse({"benchmark", "10000001"}, options));
+    assert(!Parse({"benchmark", "--plain", "10000", "--vmcall", "10000001"}, options));
 
     assert(!Parse({"benchmark", "--selfcheck"}, options));
     assert(!Parse({"benchmark", "9999"}, options));
@@ -95,13 +104,26 @@ int main()
     const ModuleOutcome combined = CombineOutcome(failure, setupFailure);
     assert(!combined.passed);
     assert(combined.setupError == ERROR_ACCESS_DENIED);
+    const ModuleOutcome gatedFailure{true, false, ERROR_SUCCESS};
+    const ModuleOutcome nonSetupCode{false, true, 1};
+    const ModuleOutcome gatedCombined = CombineOutcome(gatedFailure, nonSetupCode);
+    assert(gatedCombined.gated);
+    assert(!gatedCombined.passed);
+    assert(gatedCombined.setupError == ERROR_SUCCESS);
+    const ModuleOutcome firstSetup{false, true, ERROR_FILE_NOT_FOUND};
+    const ModuleOutcome secondSetup{false, true, ERROR_ACCESS_DENIED};
+    assert(CombineOutcome(firstSetup, secondSetup).setupError == ERROR_FILE_NOT_FOUND);
 
     assert(AverageAdjustedTiming(1000, 200, 100) == 8);
     assert(AverageAdjustedTiming(200, 1000, 100) == -8);
     assert(AverageAdjustedTiming(0, 0, 0) == 0);
 
-    const ModuleResult panel{"Timer", {{"mean", "12"}}, {false, true, ERROR_SUCCESS}};
-    assert(CapturePanel(panel, true) == "Timer:\nmean | 12\n\n");
+    const ModuleResult panel{
+        "Timer",
+        {{"short", "12345"}, {"long-name", "1"}},
+        {false, true, ERROR_SUCCESS}};
+    assert(CapturePanel(panel, true) ==
+           "Timer:\nshort | 12345\nlong-name | 1\n\n");
     const std::string boxed = CapturePanel(panel, false);
     assert(boxed.find("\xE2\x94\x8C") != std::string::npos);
     assert(boxed.find("\xE2\x94\x80") != std::string::npos);
@@ -110,7 +132,12 @@ int main()
     assert(boxed.find("\xE2\x94\x94") != std::string::npos);
     assert(boxed.find("\xE2\x94\x98") != std::string::npos);
     assert(boxed.find("Timer") != std::string::npos);
-    assert(boxed.find("mean | 12") != std::string::npos);
-    assert(boxed == "┌─ Timer ───┐\n│ mean | 12 │\n└───────────┘\n");
+    assert(boxed.find("short     | 12345") != std::string::npos);
+    assert(boxed.find("long-name | 1    ") != std::string::npos);
+    assert(boxed ==
+           "┌─ Timer ───────────┐\n"
+           "│ short     | 12345 │\n"
+           "│ long-name | 1     │\n"
+           "└───────────────────┘\n");
     return 0;
 }

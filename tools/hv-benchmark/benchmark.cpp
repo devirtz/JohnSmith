@@ -102,10 +102,12 @@ struct SoftwareTickTripwire {
 
 [[maybe_unused]] static ModuleOutcome CombineOutcome(const ModuleOutcome left, const ModuleOutcome right)
 {
+    const DWORD setupError = left.setupError >= 2 ? left.setupError :
+                             right.setupError >= 2 ? right.setupError : ERROR_SUCCESS;
     return {
         left.gated || right.gated,
-        left.passed && right.passed && left.setupError == ERROR_SUCCESS && right.setupError == ERROR_SUCCESS,
-        left.setupError != ERROR_SUCCESS ? left.setupError : right.setupError
+        left.passed && right.passed && setupError == ERROR_SUCCESS,
+        setupError
     };
 }
 
@@ -118,17 +120,24 @@ struct SoftwareTickTripwire {
         std::putchar('\n');
         return;
     }
-    std::size_t width = result.title.size() + 3;
-    for (const PanelRow& row : result.rows)
-        width = std::max(width, row.name.size() + row.value.size() + 5);
+    std::size_t nameWidth = 0;
+    std::size_t valueWidth = 0;
+    for (const PanelRow& row : result.rows) {
+        nameWidth = (std::max)(nameWidth, row.name.size());
+        valueWidth = (std::max)(valueWidth, row.value.size());
+    }
+    const std::size_t width = (std::max)(
+        result.title.size() + 3, nameWidth + valueWidth + 5);
     std::printf("┌─ %s ", result.title.c_str());
     for (std::size_t i = result.title.size() + 3; i < width; ++i) std::printf("─");
     std::printf("┐\n");
     for (const PanelRow& row : result.rows)
     {
-        const std::size_t rowWidth = row.name.size() + row.value.size() + 5;
-        std::printf("│ %s | %s", row.name.c_str(), row.value.c_str());
-        for (std::size_t i = rowWidth; i < width; ++i) std::putchar(' ');
+        std::printf("│ %s", row.name.c_str());
+        for (std::size_t i = row.name.size(); i < nameWidth; ++i) std::putchar(' ');
+        std::printf(" | %s", row.value.c_str());
+        for (std::size_t i = row.value.size(); i < valueWidth; ++i) std::putchar(' ');
+        for (std::size_t i = nameWidth + valueWidth + 5; i < width; ++i) std::putchar(' ');
         std::printf(" │\n");
     }
     std::printf("└");
